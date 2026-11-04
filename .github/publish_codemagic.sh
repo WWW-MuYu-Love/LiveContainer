@@ -92,7 +92,7 @@ if [ -z "$UID_REL" ]; then
 fi
 BODY_JSON=$(python3 -c "import json,os
 sha = os.environ['SHA']; msg = os.environ['MSG']
-body = f\"**Commit:** [{sha}](https://github.com/{os.environ['REPO']}/commit/{sha})\n**Message:** {msg}\n\nThis is an update release [created automatically with Codemagic workflow]({os.environ['BUILD_LINK']}).\"
+body = f\"**Commit:** [{sha}](https://github.com/{os.environ['REPO']}/commit/{sha})\n**Version:** {os.environ['VER']}\n**Message:** {msg}\n\nThis is an update release [created automatically with Codemagic workflow]({os.environ['BUILD_LINK']}).\"
 print(json.dumps({'body': body}))")
 curl -sf -X PATCH "${AUTH[@]}" "$API/releases/$UID_REL" -d "$BODY_JSON" >/dev/null
 replace_assets "$UID_REL" "LiveContainer.ipa" "LiveContainer+SideStore.ipa" ".github/apps_nightly.json"

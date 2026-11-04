@@ -1011,6 +1011,26 @@ struct LCDataManagementView : View {
     // static let，否则编译报 attribute 不能用在这条声明上，
     // 269b523 那次构建 #233 就是这么挂的。
     @discardableResult
+    /// JSON 可写值过滤：字符串/数字原样，数组/字典递归过
+    /// 滤（剔掉不可写的成员），其余类型（Data、Date 等）
+    /// 返回 nil 表示不收。
+    private static func jsonSafeValue(_ value: Any) -> Any? {
+        switch value {
+        case is String, is NSNumber:
+            return value
+        case let array as [Any]:
+            return array.compactMap { jsonSafeValue($0) }
+        case let dict as [String: Any]:
+            var out: [String: Any] = [:]
+            for (k, v) in dict {
+                if let safe = jsonSafeValue(v) { out[k] = safe }
+            }
+            return out
+        default:
+            return nil
+        }
+    }
+
     static func writeCZFSettingsBackup() -> (local: URL?, externalFolderName: String?) {
         let skip: Set<String> = ["CZFUpdatableAppCount", "CZFLastSourceAutoRefresh"]
         var payload: [String: Any] = [:]
@@ -1037,7 +1057,21 @@ struct LCDataManagementView : View {
                 payload[key] = value
             }
         }
-        guard let data = try? JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted, .sortedKeys]) else {
+        // 序列化前过一遍 JSON 安全过滤：payload 是从整个
+        // UserDefaults 里按前缀扫出来的，3.8.3 新增的分组
+        // 数据 CZFVPNNodeGroups 是 Data、二进制书签也是
+        // Data，这类值混进去会让 JSONSerialization 直接抛
+        // ObjC 异常闪退（try? 拦不住异常）——导入/刷新订阅
+        // 与左滑删节点全崩在写备份这一步、成功弹窗来不及
+        // 出，就是它。只留字符串/数字与由它们组成的数组、
+        // 字典，其余（Data、Date 等）不进备份文件。
+        var cleanPayload: [String: Any] = [:]
+        for (key, value) in payload {
+            if let safe = Self.jsonSafeValue(value) {
+                cleanPayload[key] = safe
+            }
+        }
+        guard let data = try? JSONSerialization.data(withJSONObject: cleanPayload, options: [.prettyPrinted, .sortedKeys]) else {
             return (nil, nil)
         }
         let fm = FileManager.default

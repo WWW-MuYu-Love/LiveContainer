@@ -408,7 +408,7 @@ final class LCAppBannerViewController: UIViewController, UIContextMenuInteractio
         // launch 侧 showError，不在这里重复报错）。
         guard let uuid = bannerInstanceUUID() else {
             Task { [weak self] in
-                await self?.launchForAux(multitask: nil, containerFolderName: nil)
+                await self?.launchForAux(multitask: true, containerFolderName: nil)
             }
             var attempts = 0
             Timer.scheduledTimer(withTimeInterval: 0.3, repeats: true) { [weak self] timer in
@@ -446,23 +446,23 @@ final class LCAppBannerViewController: UIViewController, UIContextMenuInteractio
                 return
             }
         }
-        // 未运行：先启动，面板同款 0.3 秒×20 次轮询等窗口出现
-        // 再最小化；轮询只认归属对得上的条目，别人的窗口占着
-        // uuid 时直接停表、不碰它（自己的新窗若拆容器会换 uuid，
-        // 等这个 uuid 也等不来）。启动失败只走 showError，
-        // 轮询 20 次后自停——到期分不清失败还是拆容器换号，
-        // 不在这里误报错。
-        Task { [weak self] in
-            await self?.launchForAux(multitask: nil, containerFolderName: uuid)
-        }
+        // 未运行：照小窗口同款——先注册窗口出现回调，再以多
+        // 任务方式启动；窗口一出现（0.35 秒后，与小窗口同款延
+        // 迟）复验归属再最小化。效果与手动「点小窗口 → 点黄
+        // 色减号」一致：窗口以小窗出现、随即收进右侧 dock。
+        // 旧路是 multitask:nil 全屏直启 + 0.3 秒×20 次轮询等
+        // apps 条目：全屏场景的条目键与容器 uuid 对不上，轮询
+        // 基本等不到，窗口就挂在那儿——用户实测点最小化等于
+        // 点启动。回调由 czfOnWindowAppeared 的 30 秒超时兜底，
+        // 窗口不出现就自动放弃，不留野观察者。
         let expectedPath = configuration.model.appInfo.relativeBundlePath
         let expectedBundleId = configuration.model.appInfo.bundleIdentifier()
-        var attempts = 0
-        Timer.scheduledTimer(withTimeInterval: 0.3, repeats: true) { timer in
-            attempts += 1
-            if let entry = MultitaskDockManager.shared.apps.first(where: { $0.appUUID == uuid }) {
-                // 归属验法与上面已运行分支同款：路径优先，
-                // 路径缺失用 bundleId 兜底。
+        dockManager.czfOnWindowAppeared(uuid: uuid, timeout: 30) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                // 归属复验与已运行分支同款：路径优先，
+                // 路径缺失用 bundleId 兜底；占着 uuid 的若是
+                // 别人的窗口，什么都不做。
+                guard let entry = MultitaskDockManager.shared.apps.first(where: { $0.appUUID == uuid }) else { return }
                 let owned: Bool
                 if let entryPath = entry.appInfo?.relativeBundlePath, !entryPath.isEmpty {
                     owned = entryPath == expectedPath
@@ -474,10 +474,10 @@ final class LCAppBannerViewController: UIViewController, UIContextMenuInteractio
                 if owned {
                     MultitaskDockManager.shared.minimizeWindow(uuid: uuid)
                 }
-                timer.invalidate()
-            } else if attempts >= 20 {
-                timer.invalidate()
             }
+        }
+        Task { [weak self] in
+            await self?.launchForAux(multitask: true, containerFolderName: uuid)
         }
     }
 
@@ -669,13 +669,28 @@ final class LCAppBannerViewController: UIViewController, UIContextMenuInteractio
         rightSwipeStack.isHidden = !visible
     }
 
+    // 按钮露出跟随滑动进度（用户要的参考动画效果）：圆钮随
+    // 拖动从小长大并淡入、文字后半程才淡入，拖多少露多少；
+    // 松手吸附时在同一动画块里把进度设到终值，与卡片同步，
+    // 不再是手势一动整颗按钮直接弹出来糊在半透明卡面上。
+    private func applySwipeReveal(forOffset offset: CGFloat) {
+        let leftP = min(max(offset / leftSwipeWidth, 0), 1)
+        let rightP = min(max(-offset / rightSwipeWidth, 0), 1)
+        vpnSwipeButton.setRevealProgress(leftP)
+        backupSwipeButton.setRevealProgress(rightP)
+        uninstallSwipeButton.setRevealProgress(rightP)
+    }
+
     private func setSwipeOffset(_ offset: CGFloat, animated: Bool) {
         swipeOffset = offset
         swipeCloseTapGesture?.isEnabled = offset != 0
         if offset != 0 {
             setSwipeButtonsVisible(true)
         }
-        let apply = { self.bannerView.transform = CGAffineTransform(translationX: offset, y: 0) }
+        let apply = {
+            self.bannerView.transform = CGAffineTransform(translationX: offset, y: 0)
+            self.applySwipeReveal(forOffset: offset)
+        }
         if animated {
             UIView.animate(withDuration: 0.25, delay: 0, options: [.curveEaseOut], animations: apply) { _ in
                 if self.swipeOffset == 0 {
@@ -695,11 +710,13 @@ final class LCAppBannerViewController: UIViewController, UIContextMenuInteractio
         case .began:
             swipeStartOffset = swipeOffset
             setSwipeButtonsVisible(true)
+            applySwipeReveal(forOffset: swipeOffset)
         case .changed:
             let raw = swipeStartOffset + gesture.translation(in: swipeContainerView).x
             let clamped = min(max(raw, -rightSwipeWidth), leftSwipeWidth)
             swipeOffset = clamped
             bannerView.transform = CGAffineTransform(translationX: clamped, y: 0)
+            applySwipeReveal(forOffset: clamped)
         case .ended, .cancelled, .failed:
             let total = swipeStartOffset + gesture.translation(in: swipeContainerView).x
             let velocity = gesture.velocity(in: swipeContainerView).x
@@ -1019,5 +1036,16 @@ final class LCBannerSwipeButton: UIControl {
         didSet {
             circleView.alpha = isHighlighted ? 0.72 : 1
         }
+    }
+
+    // 侧滑露出进度（0 = 刚起步、1 = 完全打开）：圆钮 0.55 倍
+    // 起步随进度长大并淡入，标题文字在后半程才淡入。本体保
+    // 持不透明，透明度分给圆和文字两部分。
+    func setRevealProgress(_ progress: CGFloat) {
+        let p = min(max(progress, 0), 1)
+        let scale = 0.55 + 0.45 * p
+        circleView.transform = CGAffineTransform(scaleX: scale, y: scale)
+        circleView.alpha = p
+        titleLabel.alpha = min(max((p - 0.45) / 0.55, 0), 1)
     }
 }

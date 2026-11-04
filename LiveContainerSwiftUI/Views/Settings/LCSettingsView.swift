@@ -426,7 +426,14 @@ struct LCSettingsView: View {
                         updateStatusText = "已是最新（\(current)）"
                     } else {
                         updateInfo = info
+                        // 用户定版：版本号排在提交号前面（与该
+                        // update 包的 Info.plist 版本同步，发布
+                        // 脚本写在正文里）；旧正文没版本号时
+                        // 回落到只显提交号。
                         var text = "有新版：\(info.commit)"
+                        if let version = info.version {
+                            text = "有新版：\(version) · \(info.commit)"
+                        }
                         if let date = info.publishedAt {
                             let formatter = DateFormatter()
                             formatter.dateFormat = "yyyy-MM-dd"
@@ -528,17 +535,18 @@ struct LCSettingsView: View {
                     }
                 }
             }
-        } footer: {
-            Text("当前版本 \(currentAppVersion)")
         }
     }
 
     @ViewBuilder private var versionFooter: some View {
-        VStack{
-            // 底部落款（用户定版）：不再显示版本号/分支/
-            // 提交号那一长串，只留「丶沐雨丿修改版」居中
-            // 一行；连点 5 下开开发者模式的手势保留在
-            // 文字上，别删。
+        VStack(spacing: 4) {
+            // 底部落款（用户定版）：「当前版本 X」从更新卡的
+            // 左对齐页脚挪到这里，压在「丶沐雨丿修改版」上方、
+            // 同样居中；分支/提交号那一长串仍不显示。连点 5
+            // 下开开发者模式的手势保留在修改版文字上，别删。
+            Text("当前版本 \(currentAppVersion)")
+                .foregroundStyle(.gray)
+                .frame(maxWidth: .infinity, alignment: .center)
             Text("丶沐雨丿修改版")
                 .foregroundStyle(.gray)
                 .frame(maxWidth: .infinity, alignment: .center)

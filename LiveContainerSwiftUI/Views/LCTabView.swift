@@ -8,13 +8,14 @@
 import Foundation
 import SwiftUI
 
-/// 全局搜索中枢（用户定版，仿 SideKite / iOS 26 新标签栏）：
-/// 底部搜索键点开后按当前标签页搜当前菜单——App 页/源页把
-/// 词同步进各自已有的 searchContext（走现成过滤），设置页
-/// 按段标题过滤，模块页按文件名过滤。状态全应用一份，各
-/// 页 @ObservedObject 订它；切标签页时 LCTabView 清关键词
-/// （新页面重新搜），取消则全清。呈现分两条路：iOS 26+ 用
-/// 系统搜索标签（rootTabs），以下用浮动键+胶囊框（旧路）。
+/// 全局搜索中枢（用户定版）：底部圆形搜索键点开后，胶囊
+/// 搜索框浮在键盘上方、停留在当前页内搜当前菜单——App 页/
+/// 源页把词同步进各自已有的 searchContext（走现成过滤），
+/// 设置页按段标题过滤，模块页按文件名过滤。状态全应用一
+/// 份，各页 @ObservedObject 订它；切标签页时 LCTabView 清
+/// 关键词（新页面重新搜），取消则全清。呈现全系统统一走
+/// 浮动键+胶囊框（原 iOS 26 系统搜索标签那条路用户不要：
+/// 它会切去一个镜像页，不是视频里那种当前页浮框样式）。
 final class CZFSearchCenter: ObservableObject {
     static let shared = CZFSearchCenter()
     @Published var isActive = false
@@ -48,43 +49,6 @@ extension View {
         } else {
             self.searchable(text: text, placement: placement)
         }
-    }
-}
-
-/// iOS 26 搜索标签的内容：就是当前页本身（按 selectedTab
-/// 取同一页），系统搜索框绑定 CZFSearchCenter.query，各页
-/// 已有的 onChange 同步把词带进各自过滤，效果与在原页搜
-/// 一致；出现/消失同步 isActive（各页靠它决定同步与清理）。
-@available(iOS 26.0, *)
-private struct CZFSearchTabContent: View {
-    @EnvironmentObject private var sharedModel: SharedModel
-    @ObservedObject private var globalSearch = CZFSearchCenter.shared
-
-    // 镜像目标：选中值是 .search 时按上一个内容标签，
-    // 否则就是当前标签本身。
-    private var effectiveTab: LCTabIdentifier {
-        sharedModel.selectedTab == .search ? globalSearch.lastContentTab : sharedModel.selectedTab
-    }
-
-    var body: some View {
-        Group {
-            switch effectiveTab {
-            case .sources:
-                LCSourcesView()
-            case .apps:
-                LCAppListView()
-            case .tweaks:
-                LCTweaksView()
-            case .settings, .vpn:
-                LCSettingsView()
-            case .search:
-                LCAppListView()
-            }
-        }
-        .environment(\.czfInSearchTab, true)
-        .searchable(text: $globalSearch.query)
-        .onAppear { globalSearch.isActive = true }
-        .onDisappear { globalSearch.isActive = false }
     }
 }
 
@@ -124,6 +88,11 @@ struct LCTabView: View {
             }
         }
         .onAppear {
+            // 搜索标签已去掉：旧版本残留的 .search 选中值没有
+            // 标签可落，回落到上一个内容标签，免得白屏。
+            if sharedModel.selectedTab == .search {
+                sharedModel.selectedTab = globalSearch.lastContentTab
+            }
             // 提前把多任务管理器建起来：全局手势识别器和 Darwin
             // 监听都在它的 init 里装配，懒到第一个 App 打开才建，
             // 刚进 LiveContainer 在主界面就滑不出面板（用户实测）。
@@ -216,15 +185,13 @@ struct LCTabView: View {
         }
     }
     
-    // 根标签栏，两条路（用户定版「就像 iOS 26 新标签栏那样」）：
-    // iOS 26+ 用系统新标签栏：Tab 新 API + 一个 role 为 search
-    // 的搜索标签——标签栏右侧自带独立圆形搜索键，点开后搜索
-    // 框浮在键盘上方（与用户图片一致），内容是当前页本身
-    // （CZFSearchTabContent），词走 CZFSearchCenter 同步过滤。
-    // iOS 26 以下没有这个 API，沿用旧标签栏 + 浮动搜索键 +
-    // 底部胶囊搜索框那套。VPN 标签两条路都不再有（入口在
-    // 设置页「代理设置」），LCTabIdentifier.vpn 枚举留着不动，
-    // 免得旧的选中标签值对不上号。
+    // 根标签栏：iOS 26+ 用系统新标签栏（Tab 新 API），以下
+    // 用旧标签栏；搜索两条路统一为浮动圆形键 + 底部胶囊框
+    // （用户看视频定版的样式：停留在当前页、框浮在键盘上
+    // 方）。原 iOS 26 的系统搜索标签会切去镜像页，用户不要，
+    // 已去掉。VPN 标签两条路都不再有（入口在设置页「代理
+    // 设置」），LCTabIdentifier.vpn 枚举留着不动，免得旧的
+    // 选中标签值对不上号。
     @ViewBuilder private var rootTabs: some View {
         if #available(iOS 26.0, *) {
             TabView(selection: $sharedModel.selectedTab) {
@@ -245,8 +212,16 @@ struct LCTabView: View {
                 Tab("lc.tabView.settings".loc, systemImage: "gearshape.fill", value: LCTabIdentifier.settings) {
                     LCSettingsView()
                 }
-                Tab("搜索", systemImage: "magnifyingglass", value: LCTabIdentifier.search, role: .search) {
-                    CZFSearchTabContent()
+            }
+            .overlay(alignment: .bottomTrailing) {
+                globalSearchButton
+            }
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                globalSearchBar
+            }
+            .onChange(of: globalSearch.isActive) { active in
+                if active {
+                    searchFieldFocused = true
                 }
             }
         } else {
@@ -293,8 +268,15 @@ struct LCTabView: View {
         }
     }
 
-    // 底部圆形搜索键（iOS 26 以下的旧路）：浮在标签栏上方
-    // 右侧，不挡任何标签的点击。
+    // 圆形搜索键与标签栏的对齐间距：iOS 26 的标签栏是浮动
+    // 胶囊（悬在底部安全区上方），键与它同高并排；旧标签栏
+    // 是全宽贴底，键浮在它上方。
+    private var searchButtonBottomPadding: CGFloat {
+        if #available(iOS 26.0, *) { return 36 }
+        return 92
+    }
+
+    // 底部圆形搜索键：浮在标签栏右侧，不挡任何标签的点击。
     @ViewBuilder private var globalSearchButton: some View {
         if !globalSearch.isActive {
             Button {
@@ -315,7 +297,7 @@ struct LCTabView: View {
             }
             .buttonStyle(.plain)
             .padding(.trailing, 16)
-            .padding(.bottom, 92)
+            .padding(.bottom, searchButtonBottomPadding)
         }
     }
 
@@ -359,8 +341,8 @@ struct LCTabView: View {
     }
 
     private var globalSearchPlaceholder: String {
-        // .search 只在 iOS 26 搜索标签下出现，那条路不用这个
-        // 占位文案；真遇到时按上一个内容标签取，保持穷尽。
+        // .search 已无标签可落（搜索标签已去掉）；真遇到时按
+        // 上一个内容标签取，保持 switch 穷尽。
         let tab = sharedModel.selectedTab == .search ? globalSearch.lastContentTab : sharedModel.selectedTab
         switch tab {
         case .sources: return "搜索源"

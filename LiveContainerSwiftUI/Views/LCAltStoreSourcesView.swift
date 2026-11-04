@@ -570,9 +570,12 @@ struct LCSourcesView: View {
                     .padding()
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
                 } else {
-                    ScrollView {
-                        LazyVStack(spacing: 16) {
-                            ForEach(viewModel.sources, id: \.id) { item in
+                    // 列表而非滚动视图：源头的左右滑（右滑刷
+                    // 新、左滑删除）只能挂在 List 行上，与节
+                    // 点页同款。每行就是一整个源段（头卡 +
+                    // 展开的应用行），滑动整段跟着走。
+                    List {
+                        ForEach(viewModel.sources, id: \.id) { item in
                                 let apps = filteredApps(for: item)
                                 AltStoreSourceSectionView(
                                     item: item,
@@ -596,23 +599,41 @@ struct LCSourcesView: View {
                                         }
                                     }
                                 )
-                                .padding(.horizontal)
-                                .animation(.easeInOut, value: apps.count)
-                            }
-                            
-                            if totalFilteredAppCount == 0 {
-                                VStack(spacing: 8) {
-                                    Text("lc.sources.section.noApps".loc)
-                                        .foregroundStyle(.gray)
-                                        .multilineTextAlignment(.center)
+                                .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
+                                .listRowSeparator(.hidden)
+                                // 右滑到底直接刷新这个源
+                                .swipeActions(edge: .leading, allowsFullSwipe: true) {
+                                    Button {
+                                        Task { await viewModel.refreshSource(item) }
+                                    } label: {
+                                        Label("lc.sources.refresh".loc, systemImage: "arrow.clockwise")
+                                    }
+                                    .tint(.blue)
                                 }
-                                .frame(maxWidth: .infinity)
-                                .frame(minHeight: 160, alignment: .center)
-                                .padding(.horizontal)
-                            }
+                                // 左滑弹出删除按钮，点按走原有
+                                // 的删除确认弹窗
+                                .swipeActions(edge: .trailing) {
+                                    Button(role: .destructive) {
+                                        sourcePendingRemoval = item
+                                    } label: {
+                                        Label("lc.sources.removeSource".loc, systemImage: "trash")
+                                    }
+                                }
+                                .animation(.easeInOut, value: apps.count)
                         }
-                        .padding(.vertical)
+
+                        if totalFilteredAppCount == 0 {
+                            VStack(spacing: 8) {
+                                Text("lc.sources.section.noApps".loc)
+                                    .foregroundStyle(.gray)
+                                    .multilineTextAlignment(.center)
+                            }
+                            .frame(maxWidth: .infinity)
+                            .frame(minHeight: 160, alignment: .center)
+                            .listRowSeparator(.hidden)
+                        }
                     }
+                    .listStyle(.plain)
                 }
             }
             .navigationTitle("lc.tabView.sources".loc)
@@ -1154,35 +1175,37 @@ private struct AltStoreSourceSectionView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .center, spacing: 12) {
-                Button(action: toggleExpanded) {
-                    HStack(spacing: 10) {
-                        Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
-                            .foregroundStyle(.secondary)
-                        SourceIconView(url: item.primaryIconURL)
-                            .frame(width: 36, height: 36)
-                            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                        Text(item.source?.name ?? item.displayName)
-                            .font(.system(.title2).bold())
-                    }
-                }
-                .buttonStyle(.plain)
+            // 源头改按钮卡（同节点组头）：整卡即按钮，点按
+            // 展开/收起，长按直接复制源地址（带成功震动）；
+            // 原「···」菜单删除——刷新走行右滑、删除走行
+            // 左滑，都在主页列表行上。加载中右侧转圈保留。
+            HStack(alignment: .center, spacing: 10) {
+                Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                    .foregroundStyle(.secondary)
+                SourceIconView(url: item.primaryIconURL)
+                    .frame(width: 36, height: 36)
+                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                Text(item.source?.name ?? item.displayName)
+                    .font(.system(.title2).bold())
+                    .lineLimit(1)
                 Spacer()
                 if item.isLoading {
                     ProgressView()
-                } else {
-                    Menu {
-                        Button("lc.sources.refresh".loc, systemImage: "arrow.clockwise", action: onRefresh)
-                        Button("复制源链接", systemImage: "doc.on.doc") {
-                            UIPasteboard.general.string = item.url.absoluteString
-                        }
-                        Button("lc.sources.removeSource".loc, systemImage: "trash", role: .destructive, action: onRemove)
-                    } label: {
-                        Image(systemName: "ellipsis.circle")
-                            .imageScale(.large)
-                            .foregroundColor(.secondary)
-                    }
                 }
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .background(
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .fill(Color(UIColor.secondarySystemBackground))
+            )
+            .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .onTapGesture {
+                toggleExpanded()
+            }
+            .onLongPressGesture {
+                UIPasteboard.general.string = item.url.absoluteString
+                UINotificationFeedbackGenerator().notificationOccurred(.success)
             }
             
             if let subtitle = item.source?.subtitle, !subtitle.isEmpty {
@@ -1360,15 +1383,18 @@ private struct LCSourceAppBanner: View {
                                 .background(Capsule().fill(Color.orange))
                         }
                     }
+                    // 版本·包名行与下面一行按用户要求再调小一
+                    // 号（12→11、11→10），下面一行放开到两行，
+                    // 尽量显示完整而不是早早截断。
                     Text(metadataText)
-                        .font(.caption)
+                        .font(.system(size: 11))
                         .foregroundColor(textColor)
                         .lineLimit(2)
                     if !subtitleText.isEmpty {
                         Text(subtitleText)
-                            .font(.caption2)
+                            .font(.system(size: 10))
                             .foregroundColor(textColor)
-                            .lineLimit(1)
+                            .lineLimit(2)
                     }
                 }
             }

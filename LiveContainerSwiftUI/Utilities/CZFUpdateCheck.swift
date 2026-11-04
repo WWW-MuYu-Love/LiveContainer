@@ -8,6 +8,10 @@ import Foundation
 struct CZFUpdateInfo {
     /// 短提交号，如 25c5124
     let commit: String
+    /// 该 update 包的版本号（发布脚本写在正文 **Version:** 行、
+    /// 与 Info.plist 版本同步；旧正文没有这一行时为 nil，
+    /// 展示时回落到只显提交号）
+    let version: String?
     let publishedAt: Date?
     let downloadURL: URL
 }
@@ -56,9 +60,19 @@ enum CZFUpdateCheck {
                 downloadURL = url
             }
             completion(.success(CZFUpdateInfo(commit: String(fullSHA.prefix(7)),
+                                               version: updateVersion(from: body),
                                                publishedAt: publishedAt,
                                                downloadURL: downloadURL)))
         }.resume()
+    }
+
+    /// 正文里的版本号：发布脚本在 Commit 行下一行写
+    /// "**Version:** 3.8.3"，与该包 Info.plist 的版本同步。
+    private static func updateVersion(from body: String) -> String? {
+        guard let regex = try? NSRegularExpression(pattern: "Version:\\*\\* ([0-9A-Za-z.\\-]+)"),
+              let match = regex.firstMatch(in: body, range: NSRange(body.startIndex..., in: body)),
+              let range = Range(match.range(at: 1), in: body) else { return nil }
+        return String(body[range])
     }
 
     private static func updateCommitSHA(from body: String) -> String? {

@@ -43,6 +43,11 @@ struct LCVPNView: View {
     // 节点多选删除：长按行进多选（链接作键，分组/导入换列表不错位），
     // 全选/删除选中/取消在这组状态上跑，删在用节点走已有确认框。
     @State var vpnNodeSelecting = false
+    // 节点点选防抖：同一节点 0.4 秒内的重复触发直接吞掉
+    // （双指点、连点会把行动作重复投递，核心被反复停启
+    // 有闪退风险；见 nodeRow 的点按手势）。
+    @State private var lastNodeTapLink: String?
+    @State private var lastNodeTapAt = Date.distantPast
     @State var vpnSelectedNodeLinks: Set<String> = []
     @State var pendingDeleteLinks: Set<String> = []
     @State var vpnPinging = false
@@ -473,23 +478,21 @@ struct LCVPNView: View {
     }
 
     @ViewBuilder private func groupHeader(_ group: CZFVPNManager.CZFVPNNodeGroup) -> some View {
+        // 组头是整张按钮卡（照小火箭）：订阅名就是按钮，白
+        // 色圆角卡铺满整行，点卡身（除刷新/信息两颗钮）展开
+        // 或收起，节点从卡下方弹出。卡内两颗钮自己消费点击，
+        // 不会触发卡身的点按手势。
         VStack(alignment: .leading, spacing: 3) {
             HStack(spacing: 7) {
-                Button {
-                    CZFVPNManager.shared.setGroupCollapsed(id: group.id, collapsed: !group.collapsed)
-                    refreshVPNState()
-                } label: {
-                    HStack(spacing: 7) {
-                        Image(systemName: group.collapsed ? "chevron.right" : "chevron.down")
-                            .font(.system(size: 12, weight: .bold))
-                            .foregroundStyle(.blue)
-                        Text(group.name)
-                            .font(.system(size: 17, weight: .semibold))
-                            .foregroundStyle(.primary)
-                            .lineLimit(1)
-                    }
+                HStack(spacing: 7) {
+                    Image(systemName: group.collapsed ? "chevron.right" : "chevron.down")
+                        .font(.system(size: 14, weight: .bold))
+                        .foregroundStyle(.blue)
+                    Text(group.name)
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
                 }
-                .buttonStyle(.plain)
                 Spacer()
                 if !group.isLocal {
                     if vpnGroupBusyId == group.id {
@@ -499,9 +502,14 @@ struct LCVPNView: View {
                         Button {
                             refreshGroup(group)
                         } label: {
-                            Image(systemName: "arrow.clockwise")
-                                .font(.system(size: 15, weight: .medium))
+                            // 照小火箭组头那颗：双箭头环形大图标
+                            // （原来 15 号太小难按），点击区给到
+                            // 40×40，与旁边的信息圆圈视觉同级。
+                            Image(systemName: "arrow.2.circlepath")
+                                .font(.system(size: 23, weight: .medium))
                                 .foregroundStyle(.blue)
+                                .frame(width: 40, height: 40)
+                                .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
                         .disabled(vpnPinging || vpnSinglePinging || vpnGroupBusyId != nil)
@@ -527,6 +535,17 @@ struct LCVPNView: View {
             }
         }
         .textCase(nil)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+        .background(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(Color(UIColor.systemBackground))
+        )
+        .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .onTapGesture {
+            CZFVPNManager.shared.setGroupCollapsed(id: group.id, collapsed: !group.collapsed)
+            refreshVPNState()
+        }
         .padding(.bottom, 2)
     }
 
@@ -599,7 +618,31 @@ struct LCVPNView: View {
     // 换组都不错位），行内动作与分组前完全一致。
     @ViewBuilder private func nodeRow(link: String) -> some View {
         let index = vpnNodes.firstIndex(of: link) ?? -1
-        Button {
+        // 行点击不用 Button：Button 与 onLongPressGesture 同
+        // 挂一行时，List 的手势仲裁会把轻点也先喂给长按识
+        // 别器，点选直接失效（3.8.3 分组改版引入长按多选
+        // 后用户实测点节点选不中）。改成内容视图 + 点按/
+        // 长按双手势：轻点是点选、按住 0.5 秒进多选，系统
+        // 自己仲裁，两边都稳。测速中置灰仍靠段上的
+        // .disabled（对手势同样生效）。
+        HStack(spacing: 8) {
+            if vpnNodeSelecting {
+                Image(systemName: vpnSelectedNodeLinks.contains(link) ? "checkmark.circle.fill" : "circle")
+                    .foregroundStyle(vpnSelectedNodeLinks.contains(link) ? Color.blue : Color.secondary)
+            }
+            CZFVPNNodeLabel(
+                link: link,
+                ping: index >= 0 ? vpnPingResults[index] : nil,
+                isActive: index >= 0 && index == vpnActiveIndex,
+                coreRunning: vpnCoreRunning,
+                pinging: vpnPinging,
+                isSinglePingTarget: index >= 0 && vpnSinglePingIndex == index,
+                isRejected: vpnSingleRejectedLinks.contains(link),
+                isStale: index >= 0 && vpnPingStaleIndices.contains(index)
+            )
+        }
+        .contentShape(Rectangle())
+        .onTapGesture {
             if vpnNodeSelecting {
                 if vpnSelectedNodeLinks.contains(link) {
                     vpnSelectedNodeLinks.remove(link)
@@ -607,25 +650,16 @@ struct LCVPNView: View {
                     vpnSelectedNodeLinks.insert(link)
                 }
             } else if index >= 0 {
+                // 同一节点 0.4 秒内的第二次触发（双指/连点
+                // 的重复投递）不重复切核心，直接吞掉。
+                let now = Date()
+                if lastNodeTapLink == link, now.timeIntervalSince(lastNodeTapAt) < 0.4 {
+                    return
+                }
+                lastNodeTapLink = link
+                lastNodeTapAt = now
                 CZFVPNManager.shared.setActiveNode(at: index)
                 refreshVPNState()
-            }
-        } label: {
-            HStack(spacing: 8) {
-                if vpnNodeSelecting {
-                    Image(systemName: vpnSelectedNodeLinks.contains(link) ? "checkmark.circle.fill" : "circle")
-                        .foregroundStyle(vpnSelectedNodeLinks.contains(link) ? Color.blue : Color.secondary)
-                }
-                CZFVPNNodeLabel(
-                    link: link,
-                    ping: index >= 0 ? vpnPingResults[index] : nil,
-                    isActive: index >= 0 && index == vpnActiveIndex,
-                    coreRunning: vpnCoreRunning,
-                    pinging: vpnPinging,
-                    isSinglePingTarget: index >= 0 && vpnSinglePingIndex == index,
-                    isRejected: vpnSingleRejectedLinks.contains(link),
-                    isStale: index >= 0 && vpnPingStaleIndices.contains(index)
-                )
             }
         }
         // 长按行进多选删除：原来长按菜单的复测与右滑
@@ -1007,14 +1041,16 @@ private struct CZFVPNNodeLabel: View {
                 .fill(isActive ? Color.orange : Color.clear)
                 .frame(width: 9, height: 9)
             Text(flag)
-                .font(.system(size: 23))
+                .font(.system(size: 19))
             VStack(alignment: .leading, spacing: 2) {
+                // 字号按用户要求调小（16→13.5）：长名字在行里
+                // 不再早早截断、撑出按钮框。
                 Text(name)
-                    .font(.system(size: 16, weight: .semibold))
+                    .font(.system(size: 13.5, weight: .semibold))
                     .foregroundStyle(.primary)
                     .lineLimit(1)
                 Text(protoLine)
-                    .font(.system(size: 11.5))
+                    .font(.system(size: 10.5))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
@@ -1033,15 +1069,15 @@ private struct CZFVPNNodeLabel: View {
         // 不通只会逼用户误换 IP（养号大忌）
         if let ping, !ping.success, isActive, coreRunning {
             Text("在用")
-                .font(.system(size: 14, weight: .medium))
+                .font(.system(size: 12.5, weight: .medium))
                 .foregroundStyle(.green)
         } else if (pinging || isSinglePingTarget) && ping == nil {
             Text("测速中")
-                .font(.system(size: 14, weight: .medium))
+                .font(.system(size: 12.5, weight: .medium))
                 .foregroundStyle(.gray)
         } else if isSinglePingTarget {
             Text("测速中")
-                .font(.system(size: 14, weight: .medium))
+                .font(.system(size: 12.5, weight: .medium))
                 .foregroundStyle(.gray)
         } else if isRejected {
             // 单测被拒：只剩测速中途核心又被起起来的竞
@@ -1049,27 +1085,27 @@ private struct CZFVPNNodeLabel: View {
             // startSinglePing）；旧值原样保留，行上直接
             // 写“核心占用”，别让用户对着不变的数字猜。
             Text("核心占用")
-                .font(.system(size: 14, weight: .medium))
+                .font(.system(size: 12.5, weight: .medium))
                 .foregroundStyle(.orange)
         } else if ping == nil, !CZFVPNManager.isSupportedNodeScheme(CZFVPNManager.nodeScheme(for: link)) {
             // 未测到的不支持节点：按协议清单静态分级，
             // 直接标“不支持”（橙色，与实测失败的红色区分），
             // 不等人测完才知道它跑不了。
             Text("不支持")
-                .font(.system(size: 14, weight: .medium))
+                .font(.system(size: 12.5, weight: .medium))
                 .foregroundStyle(.orange)
         } else if let ping {
             // 超 24 小时的缓存结果：灰色加“·旧”，
             // 别按新鲜延迟的颜色误导切节点。
             if ping.success {
                 Text(isStale ? "\(ping.delay)ms·旧" : "\(ping.delay)ms")
-                    .font(.system(size: 14, weight: .medium))
+                    .font(.system(size: 12.5, weight: .medium))
                     .foregroundStyle(isStale ? .gray : (ping.delay < 300 ? .green : (ping.delay < 800 ? .orange : .red)))
             } else {
                 // 转换失败与网络失败分开显示：配置生成拒收
                 // 是协议不支持，不是网络不通。
                 Text((ping.conversionFailed ? "不支持" : (ping.delay == 11000 ? "超时" : "不通")) + (isStale ? "·旧" : ""))
-                    .font(.system(size: 14, weight: .medium))
+                    .font(.system(size: 12.5, weight: .medium))
                     .foregroundStyle(isStale ? .gray : .red)
             }
         }
