@@ -315,7 +315,9 @@ struct LCTabView: View {
     // iOS 26 液态玻璃背景：系统玻璃（可交互版给按钮用，
     // 按压有玻璃回弹），旧系统退回超薄材质 + 同款阴影与
     // 描边。玻璃自带高光边缘，26 上不再叠手动阴影。
-    private struct CZFGlassBackground<S: Shape>: ViewModifier {
+    // 泛型要约束到 InsettableShape：strokeBorder 只在
+    // 它上面有，只写 Shape 编译不过（3.8.5 首构建实测）
+    private struct CZFGlassBackground<S: InsettableShape>: ViewModifier {
         let shape: S
         let interactive: Bool
         func body(content: Content) -> some View {
