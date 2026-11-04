@@ -315,6 +315,11 @@ public enum LCTabIdentifier: Hashable {
     case vpn
     case tweaks
     case settings
+    // iOS 26 搜索标签的选中值：Tab(role:.search) 在带值
+    // 的 TabView 里必须给值，否则与其它标签类型不一致
+    // 编译不过；内容仍按上一个内容标签镜像（见搜索中心
+    // lastContentTab），不是一个真实页面。
+    case search
 }
 
 

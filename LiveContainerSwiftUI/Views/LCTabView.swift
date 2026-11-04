@@ -19,6 +19,9 @@ final class CZFSearchCenter: ObservableObject {
     static let shared = CZFSearchCenter()
     @Published var isActive = false
     @Published var query = ""
+    // 最近一次的内容标签（非搜索）：选中值变成 .search 后
+    // 搜索标签内容靠它镜像进搜索前的那一页。
+    var lastContentTab: LCTabIdentifier = .apps
     private init() {}
 }
 
@@ -57,9 +60,15 @@ private struct CZFSearchTabContent: View {
     @EnvironmentObject private var sharedModel: SharedModel
     @ObservedObject private var globalSearch = CZFSearchCenter.shared
 
+    // 镜像目标：选中值是 .search 时按上一个内容标签，
+    // 否则就是当前标签本身。
+    private var effectiveTab: LCTabIdentifier {
+        sharedModel.selectedTab == .search ? globalSearch.lastContentTab : sharedModel.selectedTab
+    }
+
     var body: some View {
         Group {
-            switch sharedModel.selectedTab {
+            switch effectiveTab {
             case .sources:
                 LCSourcesView()
             case .apps:
@@ -68,6 +77,8 @@ private struct CZFSearchTabContent: View {
                 LCTweaksView()
             case .settings, .vpn:
                 LCSettingsView()
+            case .search:
+                LCAppListView()
             }
         }
         .environment(\.czfInSearchTab, true)
@@ -101,7 +112,11 @@ struct LCTabView: View {
                 Spacer()
             }
         )
-        .onChange(of: sharedModel.selectedTab) { _ in
+        .onChange(of: sharedModel.selectedTab) { newTab in
+            // 记住最后一个内容标签，搜索标签靠它镜像页面。
+            if newTab != .search {
+                globalSearch.lastContentTab = newTab
+            }
             // 换页重新搜：关键词不带去新页面，占位与过滤
             // 都按新页面走；搜索框保持开着。
             if globalSearch.isActive {
@@ -230,7 +245,7 @@ struct LCTabView: View {
                 Tab("lc.tabView.settings".loc, systemImage: "gearshape.fill", value: LCTabIdentifier.settings) {
                     LCSettingsView()
                 }
-                Tab(role: .search) {
+                Tab("搜索", systemImage: "magnifyingglass", value: LCTabIdentifier.search, role: .search) {
                     CZFSearchTabContent()
                 }
             }

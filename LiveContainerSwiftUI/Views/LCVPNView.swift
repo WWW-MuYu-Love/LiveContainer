@@ -11,6 +11,7 @@
 //
 
 import Foundation
+import LiveContainerShared
 import SwiftUI
 
 struct LCVPNView: View {
