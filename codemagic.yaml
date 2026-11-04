@@ -57,6 +57,12 @@ workflows:
           command -v wget >/dev/null 2>&1 || brew install wget
           sh .github/build_github.sh
           ls -lh *.ipa
+      # 自动发版到 GitHub：需要 Codemagic 里配好加密环境变量
+      # GH_TOKEN（细粒度 PAT，仅本仓库 Contents 写权限）；
+      # 没配时脚本自动跳过、构建照常成功。
+      - name: Publish to GitHub Releases
+        script: |
+          bash .github/publish_codemagic.sh
     artifacts:
       - LiveContainer.ipa
       - LiveContainer+SideStore.ipa
