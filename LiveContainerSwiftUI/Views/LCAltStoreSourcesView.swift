@@ -1398,27 +1398,9 @@ private struct LCSourceAppBanner: View {
                 .buttonStyle(BasicButtonStyle())
                 .padding(.trailing, 8)
             } else {
-                Button {
-                    downloadAction(app)
-                } label: {
-                    Text("lc.common.download".loc)
-                        .bold()
-                        .foregroundColor(.white)
-                        .lineLimit(1)
-                        .frame(height: 32)
-                        .minimumScaleFactor(0.1)
-                }
-                .buttonStyle(BasicButtonStyle())
-                .padding(.trailing, 8)
-                .frame(idealWidth: 70)
-                .frame(height: 32)
-                .fixedSize()
-                .background(
-                    // 下载是可点的主操作：以前平灰和旁边绿/橙
-                    // 状态钮同排，看着像被禁用了，改蓝色
-                    Capsule().fill(Color.blue)
-                )
-                .clipShape(Capsule())
+                // 「下载」按钮已按要求去掉：行内只保留安装/更新/打开
+                // 等状态按钮（下载的底层函数和参数还留着，详情页等
+                // 其他入口不受影响）
                 let isDylib = (app.latestVersion?.downloadURL.pathExtension.lowercased() == "dylib")
                 if isDylib && isPluginInstalled {
                     Text("lc.common.installed".loc)

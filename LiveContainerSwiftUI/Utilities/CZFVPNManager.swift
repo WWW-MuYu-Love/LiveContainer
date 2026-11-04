@@ -2,19 +2,18 @@
 //  CZFVPNManager.swift
 //  单 App VPN（验证版，2026-10-21）
 //
-//  思路：Xray 核心（libXray 官方封装）跑在宿主进程里，开一个
+//  思路：sing-box 核心（Libbox）跑在宿主进程里，开一个
 //  本地 SOCKS5 入口（127.0.0.1:10827）；被标记的 App 单独部署
 //  CZFProxy.dylib，把它的 TCP 流量拐进这个入口经节点出网。
 //  没标记的 App 完全不碰（不启核心、不装插件）。
 //
-//  节点链接由 libXray 自带的 convertShareLinksToXrayJson 转成
-//  出站配置，本类只负责拼装完整配置（SOCKS 入站 + 全部流量走
-//  节点）与启停。域名经 SOCKS 以域名形式交给节点远端解析，
-//  本地不落 DNS。
+//  节点链接由 CZFSingBoxConfig 生成 sing-box 出站配置（全量
+//  sing-box，2026-11-05 定版，原 Xray 路径已删），本类负责
+//  配置生成调度与启停。域名经 SOCKS 以域名形式交给节点远端
+//  解析，本地不落 DNS。
 //
 
 import Foundation
-import LibXray
 import LiveContainerShared
 
 public final class CZFVPNManager {
@@ -79,13 +78,13 @@ public final class CZFVPNManager {
     // 故用 NSRecursiveLock（同仓 LCUtilsExtensions 的 lock/defer
     // 写法，见该文件 verifiedTweakFoldersLock 处）。
     // 锁只包状态切换（stop/start/抓状态/恢复），不包整段测速
-    // （pingBatch 有 5 秒超时、重试可达十几秒，包住会冻住主
+    // （单探针有 5 秒超时、串行重试可达十几秒，包住会冻住主
     // 线程的预热）；测速窗口内别的触发靠下面的 isPinging 挡。
     private let vpnCoreLock = NSRecursiveLock()
     // 测速进行中标志：测速窗口内开 App、预热、切节点一律不
     // 直接动核心，改由测速收尾统一处理（见 pingAllNodes 末尾
     // 的 deferredEnsure / 切节点跟随），否则测速结果会被
-    // 插队的核心启停打乱（pingBatch 被拒）。
+    // 插队的核心启停打乱（探针被占用挡下）。
     private var isPinging = false
     // 测延迟自动停核心的恢复快照：startVPNPing 在核心在跑
     // 时先停、测完凭它重启原来那条（归属原样）；核心没在
@@ -239,17 +238,49 @@ public final class CZFVPNManager {
         refreshSettingsBackup()
     }
 
+    /// 订阅拉取结果：链接之外带回组名与流量/到期（响应头
+    /// Subscription-Userinfo / Profile-Title；机场不给响应
+    /// 头时正文里常有 STATUS= 行，同样解析），以及从 Clash
+    /// 格式并行对回来的节点名（机场的小火箭格式里 vless
+    /// 链接不带备注，名字只在 Clash 格式里有，按 协议+
+    /// 服务器+端口 对回链接，见 matchClashNames）。
+    public struct CZFVPNSubscriptionFetch {
+        public var links: [String]
+        public var title: String?
+        public var upload: Int64?
+        public var download: Int64?
+        public var total: Int64?
+        public var expire: TimeInterval?
+        public var namesByLink: [String: String]
+        public init(links: [String], title: String? = nil, upload: Int64? = nil, download: Int64? = nil, total: Int64? = nil, expire: TimeInterval? = nil, namesByLink: [String: String] = [:]) {
+            self.links = links
+            self.title = title
+            self.upload = upload
+            self.download = download
+            self.total = total
+            self.expire = expire
+            self.namesByLink = namesByLink
+        }
+    }
+
     /// 拉订阅内容并解析出节点链接：机场订阅通常是整段 base64
     /// （解开后一行一条链接），也有直接一行一条的明文格式，
     /// 两种都认；只保留带 :// 的行（vless/vmess/trojan/ss 等）
     public static func fetchSubscriptionLinks(urlString: String, completion: @escaping (Result<[String], Error>) -> Void) {
+        fetchSubscription(urlString: urlString) { result in
+            completion(result.map { $0.links })
+        }
+    }
+
+    public static func fetchSubscription(urlString: String, completion: @escaping (Result<CZFVPNSubscriptionFetch, Error>) -> Void) {
         var trimmedInput = urlString.trimmingCharacters(in: .whitespacesAndNewlines)
         // sub:// 订阅链接：机场/客户端常发的格式，冒号后是真实订
         // 阅地址的 base64（URL 安全变体、可能缺 padding）。旧代码
         // 直接拿 sub:// 去拉，URLSession 不认这个 scheme，当场
         // 报「不支持的 URL」——正是用户 2026-10-26 截图里那条错。
         // 先解开：解出来是单条 http(s) 地址就按它拉；解出来已
-        // 经是一批节点链接就直接返回，不用再发请求。
+        // 经是一批节点链接就直接返回，不用再发请求（这种没真
+        // 地址可拉 Clash 格式对名字，namesByLink 留空）。
         if trimmedInput.lowercased().hasPrefix("sub://") {
             let payload = String(trimmedInput.dropFirst("sub://".count))
                 .components(separatedBy: .whitespacesAndNewlines).joined()
@@ -264,7 +295,7 @@ public final class CZFVPNManager {
                     .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
                     .filter { $0.contains("://") && !$0.lowercased().hasPrefix("http") }
                 if !nodeLines.isEmpty {
-                    completion(.success(nodeLines))
+                    completion(.success(CZFVPNSubscriptionFetch(links: nodeLines)))
                     return
                 }
                 trimmedInput = decodedTrimmed
@@ -282,7 +313,7 @@ public final class CZFVPNManager {
         // 不少机场按客户端 UA 返回不同格式，给个常见客户端的
         // UA 拿到原始分享链接列表
         request.setValue("Shadowrocket/2.2.50", forHTTPHeaderField: "User-Agent")
-        URLSession.shared.dataTask(with: request) { data, _, error in
+        URLSession.shared.dataTask(with: request) { data, response, error in
             if let error {
                 completion(.failure(error))
                 return
@@ -310,10 +341,182 @@ public final class CZFVPNManager {
                 .filter { $0.contains("://") }
             if links.isEmpty {
                 completion(.failure(NSError(domain: "CZFVPN", code: -3, userInfo: [NSLocalizedDescriptionKey: "订阅里没找到节点链接"])))
-            } else {
-                completion(.success(links))
+                return
+            }
+            var fetch = CZFVPNSubscriptionFetch(links: links)
+            if let http = response as? HTTPURLResponse {
+                applySubscriptionHeaders(from: http, to: &fetch)
+            }
+            parseStatusLine(in: text, to: &fetch)
+            // 并行拉一份 Clash 格式对节点名：失败只当没名字，
+            // 不影响导入本身。
+            fetchClashNames(url: url) { proxies in
+                var completed = fetch
+                completed.namesByLink = matchClashNames(proxies, toLinks: links)
+                completion(.success(completed))
             }
         }.resume()
+    }
+
+    private static func headerValue(_ response: HTTPURLResponse, _ name: String) -> String? {
+        for (k, v) in response.allHeaderFields {
+            if (k as? String)?.lowercased() == name, let s = v as? String {
+                return s
+            }
+        }
+        return nil
+    }
+
+    // 响应头里的订阅信息：Subscription-Userinfo 是精确字节
+    // 数，优先用它；Profile-Title 可能是 base64: 前缀编码。
+    private static func applySubscriptionHeaders(from response: HTTPURLResponse, to fetch: inout CZFVPNSubscriptionFetch) {
+        if let ui = headerValue(response, "subscription-userinfo") {
+            for part in ui.split(separator: ";") {
+                let kv = part.split(separator: "=", maxSplits: 1)
+                guard kv.count == 2 else { continue }
+                let key = kv[0].trimmingCharacters(in: .whitespaces).lowercased()
+                let val = kv[1].trimmingCharacters(in: .whitespaces)
+                switch key {
+                case "upload": fetch.upload = Int64(val) ?? Double(val).map { Int64($0) }
+                case "download": fetch.download = Int64(val) ?? Double(val).map { Int64($0) }
+                case "total": fetch.total = Int64(val) ?? Double(val).map { Int64($0) }
+                case "expire": fetch.expire = TimeInterval(val) ?? Double(val)
+                default: break
+                }
+            }
+        }
+        if let pt = headerValue(response, "profile-title") {
+            if pt.lowercased().hasPrefix("base64:") {
+                let b64 = String(pt.dropFirst("base64:".count))
+                if let d = Data(base64Encoded: b64), let s = String(data: d, encoding: .utf8), !s.isEmpty {
+                    fetch.title = s
+                }
+            } else if !pt.isEmpty {
+                fetch.title = pt
+            }
+        } else if let cd = headerValue(response, "content-disposition"),
+                  let m = cd.range(of: "filename=") {
+            var fn = String(cd[m.upperBound...]).trimmingCharacters(in: .whitespaces)
+            if let semi = fn.firstIndex(of: ";") { fn = String(fn[..<semi]) }
+            fn = fn.trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+            if !fn.isEmpty { fetch.title = fn }
+        }
+    }
+
+    // 小火箭格式正文里的 STATUS= 行（🚀↑:0.26GB,↓:8.67GB,
+    // TOT:170GB💡Expires:2026-12-03）：响应头缺字段时用它
+    // 补，GB 按 GiB 换算（与机场响应头的字节数对得上）。
+    private static func parseStatusLine(in text: String, to fetch: inout CZFVPNSubscriptionFetch) {
+        guard let line = text.components(separatedBy: .newlines).first(where: { $0.contains("STATUS=") }) else { return }
+        func gb(_ pattern: String) -> Int64? {
+            guard let re = try? NSRegularExpression(pattern: pattern),
+                  let m = re.firstMatch(in: line, range: NSRange(line.startIndex..., in: line)),
+                  m.numberOfRanges > 1, let r = Range(m.range(at: 1), in: line),
+                  let v = Double(line[r]) else { return nil }
+            return Int64(v * 1_073_741_824)
+        }
+        if fetch.upload == nil { fetch.upload = gb("↑[:：]?\\s*([0-9.]+)GB") }
+        if fetch.download == nil { fetch.download = gb("↓[:：]?\\s*([0-9.]+)GB") }
+        if fetch.total == nil { fetch.total = gb("TOT[:：]?\\s*([0-9.]+)GB") }
+        if fetch.expire == nil,
+           let re = try? NSRegularExpression(pattern: "Expires?[:：]?\\s*([0-9]{4}-[0-9]{2}-[0-9]{2})"),
+           let m = re.firstMatch(in: line, range: NSRange(line.startIndex..., in: line)),
+           m.numberOfRanges > 1, let r = Range(m.range(at: 1), in: line) {
+            let df = DateFormatter()
+            df.locale = Locale(identifier: "en_US_POSIX")
+            df.dateFormat = "yyyy-MM-dd"
+            if let date = df.date(from: String(line[r])) {
+                fetch.expire = date.timeIntervalSince1970
+            }
+        }
+    }
+
+    // 用 Clash 客户端 UA 再拉一次同一地址：机场会回 YAML，
+    // 里面每条代理都带真名。拉不到/不是 YAML 就返回空。
+    private static func fetchClashNames(url: URL, completion: @escaping ([(type: String, server: String, port: Int, name: String)]) -> Void) {
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 30
+        request.setValue("clash-verge/v2.0.0", forHTTPHeaderField: "User-Agent")
+        URLSession.shared.dataTask(with: request) { data, _, _ in
+            guard let data, let text = String(data: data, encoding: .utf8), text.contains("proxies:") else {
+                completion([])
+                return
+            }
+            completion(parseClashProxyNames(text))
+        }.resume()
+    }
+
+    /// 极简 Clash YAML 解析：只从 proxies: 段里抠每条的
+    /// name/type/server/port。机场生成的条目不是单行 flow
+    /// 映射就是块式缩进，两种都按「以 - 开头切条目、条目内
+    /// 正则抠字段」处理；抠不全的条目跳过。
+    private static func parseClashProxyNames(_ yaml: String) -> [(type: String, server: String, port: Int, name: String)] {
+        var out: [(type: String, server: String, port: Int, name: String)] = []
+        var inProxies = false
+        var chunk = ""
+        func flush() {
+            defer { chunk = "" }
+            guard !chunk.isEmpty else { return }
+            func field(_ pattern: String) -> String? {
+                guard let re = try? NSRegularExpression(pattern: pattern),
+                      let m = re.firstMatch(in: chunk, range: NSRange(chunk.startIndex..., in: chunk)),
+                      m.numberOfRanges > 1, let r = Range(m.range(at: 1), in: chunk) else { return nil }
+                return String(chunk[r])
+            }
+            guard let type = field(#"(?:^|[{\s,])type:\s*([a-z0-9-]+)"#),
+                  let server = field(#"(?:^|[{\s,])server:\s*([^\s,}]+)"#),
+                  let portStr = field(#"(?:^|[{\s,])port:\s*(\d+)"#),
+                  let port = Int(portStr) else { return }
+            let name = field(#"(?:^|[{\s,])name:\s*'([^']+)'"#)
+                ?? field(#"(?:^|[{\s,])name:\s*"([^"]+)""#)
+                ?? field(#"(?:^|[{\s,])name:\s*([^,}\n]+)"#)?.trimmingCharacters(in: .whitespaces)
+            guard let name, !name.isEmpty else { return }
+            out.append((type: type, server: server, port: port, name: name))
+        }
+        for line in yaml.components(separatedBy: .newlines) {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if !inProxies {
+                if line.hasPrefix("proxies:") { inProxies = true }
+                continue
+            }
+            if trimmed.hasPrefix("#") || trimmed.isEmpty { continue }
+            // proxies 段结束：顶格的新键（proxy-groups: 等）
+            if !line.hasPrefix(" ") && !line.hasPrefix("-") { break }
+            if trimmed.hasPrefix("- ") || trimmed == "-" {
+                flush()
+                chunk = String(trimmed.dropFirst(1))
+            } else {
+                chunk += "\n" + line
+            }
+        }
+        flush()
+        return out
+    }
+
+    // 把 Clash 名字对回分享链接：键 = 协议+服务器+端口（链
+    // 接先经 normalizedShareLink 归一化，老格式也能抠出
+    // 真实服务器与端口）。同键多条是机场的克隆条目（配置
+    // 相同、只是名字不同），按出现顺序依次贴名，贴哪个
+    // 都不影响使用。
+    private static func matchClashNames(_ proxies: [(type: String, server: String, port: Int, name: String)], toLinks links: [String]) -> [String: String] {
+        guard !proxies.isEmpty else { return [:] }
+        var queues: [String: [String]] = [:]
+        for p in proxies {
+            queues["\(p.type)|\(p.server.lowercased())|\(p.port)", default: []].append(p.name)
+        }
+        var out: [String: String] = [:]
+        for link in links {
+            let std = normalizedShareLink(link)
+            guard let comps = URLComponents(string: std), let host = comps.host, let port = comps.port else { continue }
+            let scheme = nodeScheme(for: link)
+            let clashType = scheme == "hy2" ? "hysteria2" : scheme
+            let key = "\(clashType)|\(host.lowercased())|\(port)"
+            if var q = queues[key], !q.isEmpty {
+                out[link] = q.removeFirst()
+                queues[key] = q
+            }
+        }
+        return out
     }
 
     // 只换节点顺序（测速排序用）：活动节点按内容找回，不
@@ -328,6 +531,324 @@ public final class CZFVPNManager {
         refreshSettingsBackup()
     }
 
+    // MARK: - 节点分组（小火箭式：本地组 + 每订阅一组）
+
+    /// 分组只是显示与归属层：核心、测速、轮换仍走上面的
+    /// 扁平列表（nodeLinks / 活动下标），分组用链接内容与
+    /// 扁平列表对齐——每个链接只属于一个组。nodeGroups()
+    /// 每次读时按当前扁平列表校准（已删的链接不显示、没
+    /// 归属的链接归本地组），所以旧路径（单删/清理/多选）
+    /// 改完扁平列表，分组显示自动跟上，不用逐处同步。
+    public struct CZFVPNNodeGroup: Codable, Identifiable, Equatable {
+        public var id: String
+        public var name: String
+        public var sourceURL: String?
+        public var links: [String]
+        public var upload: Int64?
+        public var download: Int64?
+        public var total: Int64?
+        public var expire: TimeInterval?
+        public var collapsed: Bool
+        public init(id: String, name: String, sourceURL: String?, links: [String], upload: Int64?, download: Int64?, total: Int64?, expire: TimeInterval?, collapsed: Bool) {
+            self.id = id
+            self.name = name
+            self.sourceURL = sourceURL
+            self.links = links
+            self.upload = upload
+            self.download = download
+            self.total = total
+            self.expire = expire
+            self.collapsed = collapsed
+        }
+        public var isLocal: Bool { sourceURL == nil }
+    }
+
+    private static let nodeGroupsKey = "CZFVPNNodeGroups"
+    public static let localGroupId = "local"
+
+    private func loadStoredGroups() -> [CZFVPNNodeGroup] {
+        guard let data = UserDefaults.standard.data(forKey: Self.nodeGroupsKey),
+              let groups = try? JSONDecoder().decode([CZFVPNNodeGroup].self, from: data) else { return [] }
+        return groups
+    }
+
+    private func storeGroups(_ groups: [CZFVPNNodeGroup]) {
+        if let data = try? JSONEncoder().encode(groups) {
+            UserDefaults.standard.set(data, forKey: Self.nodeGroupsKey)
+        }
+    }
+
+    /// 当前分组（已按扁平列表校准，本地组恒在第一位）。
+    public func nodeGroups() -> [CZFVPNNodeGroup] {
+        let flat = nodeLinks
+        let flatSet = Set(flat)
+        var groups = loadStoredGroups()
+        if !groups.contains(where: { $0.sourceURL == nil }) {
+            groups.insert(CZFVPNNodeGroup(id: Self.localGroupId, name: "本地节点", sourceURL: nil, links: [], upload: nil, download: nil, total: nil, expire: nil, collapsed: false), at: 0)
+        }
+        // 本地组挪到第一位（老数据里它可能不在首位）
+        if let li = groups.firstIndex(where: { $0.sourceURL == nil }), li != 0 {
+            let local = groups.remove(at: li)
+            groups.insert(local, at: 0)
+        }
+        var seen = Set<String>()
+        for i in groups.indices {
+            groups[i].links = groups[i].links.filter { flatSet.contains($0) && seen.insert($0).inserted }
+        }
+        let leftovers = flat.filter { !seen.contains($0) }
+        if !leftovers.isEmpty, let li = groups.firstIndex(where: { $0.sourceURL == nil }) {
+            groups[li].links.append(contentsOf: leftovers)
+        }
+        return groups
+    }
+
+    /// 订阅导入/刷新落点：同地址已有组就刷新那个组（订阅
+    /// 不再返回的旧节点从列表删掉，删在用节点走 removeNode
+    /// 的既有语义——停核心不自动切），没有就新建一组；
+    /// 订阅的链接从别的组认领过来，新链接追加进扁平列表。
+    /// 不再有「整体替换」：别的组和手填节点一律不动。
+    @discardableResult
+    public func upsertSubscriptionGroup(url: String, fetch: CZFVPNSubscriptionFetch) -> (name: String, count: Int, isNew: Bool) {
+        var seen = Set<String>()
+        let cleaned = fetch.links
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty && seen.insert($0).inserted }
+        var groups = nodeGroups()
+        if let idx = groups.firstIndex(where: { $0.sourceURL == url }) {
+            let dropped = Set(groups[idx].links).subtracting(cleaned)
+            if !dropped.isEmpty {
+                removeNodeLinks(dropped)
+                groups = nodeGroups()
+            }
+        }
+        for link in cleaned where !nodeLinks.contains(link) {
+            _ = addNode(link)
+        }
+        if !fetch.namesByLink.isEmpty {
+            applyNameOverrides(fetch.namesByLink)
+        }
+        groups = nodeGroups()
+        let cleanSet = Set(cleaned)
+        for i in groups.indices {
+            groups[i].links.removeAll { cleanSet.contains($0) }
+        }
+        let trimmedTitle = fetch.title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let name = !trimmedTitle.isEmpty ? trimmedTitle : (URL(string: url)?.host ?? "订阅")
+        let isNew: Bool
+        if let idx = groups.firstIndex(where: { $0.sourceURL == url }) {
+            groups[idx].links = cleaned
+            groups[idx].name = name
+            groups[idx].upload = fetch.upload
+            groups[idx].download = fetch.download
+            groups[idx].total = fetch.total
+            groups[idx].expire = fetch.expire
+            isNew = false
+        } else {
+            groups.append(CZFVPNNodeGroup(id: UUID().uuidString, name: name, sourceURL: url, links: cleaned, upload: fetch.upload, download: fetch.download, total: fetch.total, expire: fetch.expire, collapsed: false))
+            isNew = true
+        }
+        storeGroups(groups)
+        refreshSettingsBackup()
+        return (name, cleaned.count, isNew)
+    }
+
+    /// 删掉一整个订阅组及其节点（本地组不可删）。
+    public func deleteSubscriptionGroup(id: String) {
+        let groups = nodeGroups()
+        guard let g = groups.first(where: { $0.id == id }), g.sourceURL != nil else { return }
+        removeNodeLinks(Set(g.links))
+        storeGroups(nodeGroups().filter { $0.id != id })
+        refreshSettingsBackup()
+    }
+
+    public func setGroupCollapsed(id: String, collapsed: Bool) {
+        var groups = nodeGroups()
+        guard let idx = groups.firstIndex(where: { $0.id == id }) else { return }
+        groups[idx].collapsed = collapsed
+        storeGroups(groups)
+    }
+
+    /// 组内排序落盘（按延迟排序用）：只改各组 links 的顺序，
+    /// 扁平列表与核心状态一律不碰。
+    public func saveGroupOrder(_ ordered: [CZFVPNNodeGroup]) {
+        storeGroups(ordered)
+    }
+
+    /// 按链接批量删节点：逐个走 removeNode(at:)，删在用
+    /// 节点停核心等语义与单删完全一致；分组靠 nodeGroups()
+    /// 读时校准自动跟上。
+    public func removeNodeLinks(_ links: Set<String>) {
+        guard !links.isEmpty else { return }
+        let flat = nodeLinks
+        for i in flat.indices.reversed() where links.contains(flat[i]) {
+            removeNode(at: i)
+        }
+    }
+
+    // MARK: - 节点行显示（国旗 / 协议行）
+
+    /// 节点国旗：名字自带国旗 emoji 就用它；否则按名字里的
+    /// 国家/城市关键词（中英）推；都推不出给地球。
+    public static func nodeFlagEmoji(for link: String) -> String {
+        let name = nodeDisplay(for: link).name
+        let scalars = Array(name.unicodeScalars)
+        if scalars.count >= 2,
+           (0x1F1E6...0x1F1FF).contains(Int(scalars[0].value)),
+           (0x1F1E6...0x1F1FF).contains(Int(scalars[1].value)) {
+            return String(String.UnicodeScalarView([scalars[0], scalars[1]]))
+        }
+        for entry in flagKeywordsCN where entry.keywords.contains(where: { name.contains($0) }) {
+            return entry.flag
+        }
+        let upper = name.uppercased()
+        for entry in flagKeywordsEN where entry.keywords.contains(where: { upper.contains($0) }) {
+            return entry.flag
+        }
+        return "🌐"
+    }
+
+    private static let flagKeywordsCN: [(keywords: [String], flag: String)] = [
+        (["美国", "美國", "洛杉矶", "洛杉磯", "纽约", "紐約", "西雅图", "西雅圖", "芝加哥", "达拉斯", "達拉斯", "圣何塞", "聖何塞", "阿什本", "硅谷", "矽谷", "波特兰", "波特蘭", "迈阿密", "邁阿密", "凤凰城", "鳳凰城", "丹佛", "拉斯维加斯", "拉斯維加斯"], "🇺🇸"),
+        (["日本", "东京", "東京", "大阪"], "🇯🇵"),
+        (["香港"], "🇭🇰"),
+        (["新加坡", "狮城", "獅城"], "🇸🇬"),
+        (["台湾", "台灣", "台北"], "🇹🇼"),
+        (["韩国", "韓國", "首尔", "首爾"], "🇰🇷"),
+        (["英国", "英國", "伦敦", "倫敦"], "🇬🇧"),
+        (["德国", "德國", "法兰克福", "法蘭克福"], "🇩🇪"),
+        (["法国", "法國", "巴黎"], "🇫🇷"),
+        (["加拿大", "多伦多", "溫哥華", "温哥华"], "🇨🇦"),
+        (["澳大利亚", "澳大利亞", "澳洲", "悉尼", "墨尔本", "墨爾本"], "🇦🇺"),
+        (["印度尼西亚", "印尼", "雅加达", "雅加達"], "🇮🇩"),
+        (["印度", "孟买", "孟買"], "🇮🇳"),
+        (["俄罗斯", "俄羅斯", "莫斯科"], "🇷🇺"),
+        (["巴西", "圣保罗", "聖保羅"], "🇧🇷"),
+        (["荷兰", "荷蘭", "阿姆斯特丹"], "🇳🇱"),
+        (["土耳其", "伊斯坦布尔", "伊斯坦堡"], "🇹🇷"),
+        (["泰国", "泰國", "曼谷"], "🇹🇭"),
+        (["越南", "胡志明", "河内", "河內"], "🇻🇳"),
+        (["马来西亚", "馬來西亞", "吉隆坡"], "🇲🇾"),
+        (["菲律宾", "菲律賓", "马尼拉", "馬尼拉"], "🇵🇭"),
+        (["阿根廷", "布宜诺斯艾利斯"], "🇦🇷"),
+        (["西班牙", "马德里", "馬德里"], "🇪🇸"),
+        (["意大利", "米兰", "米蘭", "罗马", "羅馬"], "🇮🇹"),
+        (["瑞士", "苏黎世", "蘇黎世"], "🇨🇭"),
+        (["瑞典", "斯德哥尔摩", "斯德哥爾摩"], "🇸🇪"),
+        (["挪威", "奥斯陆", "奧斯陸"], "🇳🇴"),
+        (["芬兰", "芬蘭", "赫尔辛基", "赫爾辛基"], "🇫🇮"),
+        (["丹麦", "丹麥", "哥本哈根"], "🇩🇰"),
+        (["波兰", "波蘭", "华沙", "華沙"], "🇵🇱"),
+        (["乌克兰", "烏克蘭", "基辅", "基輔"], "🇺🇦"),
+        (["以色列", "特拉维夫", "特拉維夫"], "🇮🇱"),
+        (["阿联酋", "阿聯酋", "迪拜"], "🇦🇪"),
+        (["南非", "约翰内斯堡", "約翰內斯堡"], "🇿🇦"),
+        (["墨西哥", "墨西哥城"], "🇲🇽"),
+        (["智利", "圣地亚哥", "聖地亞哥"], "🇨🇱"),
+        (["新西兰", "新西蘭", "奥克兰", "奧克蘭"], "🇳🇿"),
+        (["奥地利", "奧地利", "维也纳", "維也納"], "🇦🇹"),
+        (["爱尔兰", "愛爾蘭", "都柏林"], "🇮🇪"),
+        (["葡萄牙", "里斯本"], "🇵🇹"),
+        (["中国", "中國"], "🇨🇳"),
+    ]
+
+    private static let flagKeywordsEN: [(keywords: [String], flag: String)] = [
+        (["USA", "UNITED STATES", "AMERICA", "LOS ANGELES", "NEW YORK", "SEATTLE", "CHICAGO", "DALLAS", "SAN JOSE", "ASHBURN", "SILICON VALLEY", "PORTLAND", "MIAMI", "PHOENIX", "DENVER", "LAS VEGAS"], "🇺🇸"),
+        (["JAPAN", "TOKYO", "OSAKA"], "🇯🇵"),
+        (["HONG KONG"], "🇭🇰"),
+        (["SINGAPORE"], "🇸🇬"),
+        (["TAIWAN", "TAIPEI"], "🇹🇼"),
+        (["KOREA", "SEOUL"], "🇰🇷"),
+        (["UNITED KINGDOM", "LONDON", "BRITAIN", "ENGLAND"], "🇬🇧"),
+        (["GERMANY", "FRANKFURT"], "🇩🇪"),
+        (["FRANCE", "PARIS"], "🇫🇷"),
+        (["CANADA", "TORONTO", "VANCOUVER"], "🇨🇦"),
+        (["AUSTRALIA", "SYDNEY", "MELBOURNE"], "🇦🇺"),
+        (["INDONESIA", "JAKARTA"], "🇮🇩"),
+        (["INDIA", "MUMBAI"], "🇮🇳"),
+        (["RUSSIA", "MOSCOW"], "🇷🇺"),
+        (["BRAZIL"], "🇧🇷"),
+        (["NETHERLANDS", "AMSTERDAM"], "🇳🇱"),
+        (["TURKEY", "ISTANBUL"], "🇹🇷"),
+        (["THAILAND", "BANGKOK"], "🇹🇭"),
+        (["VIETNAM"], "🇻🇳"),
+        (["MALAYSIA"], "🇲🇾"),
+        (["PHILIPPINES", "MANILA"], "🇵🇭"),
+        (["ARGENTINA"], "🇦🇷"),
+        (["SPAIN", "MADRID"], "🇪🇸"),
+        (["ITALY", "MILAN", "ROME"], "🇮🇹"),
+        (["SWITZERLAND", "ZURICH"], "🇨🇭"),
+        (["SWEDEN", "STOCKHOLM"], "🇸🇪"),
+        (["NORWAY", "OSLO"], "🇳🇴"),
+        (["FINLAND", "HELSINKI"], "🇫🇮"),
+        (["DENMARK", "COPENHAGEN"], "🇩🇰"),
+        (["POLAND", "WARSAW"], "🇵🇱"),
+        (["UKRAINE", "KYIV"], "🇺🇦"),
+        (["ISRAEL"], "🇮🇱"),
+        (["DUBAI", "UAE"], "🇦🇪"),
+        (["SOUTH AFRICA"], "🇿🇦"),
+        (["MEXICO"], "🇲🇽"),
+        (["CHILE"], "🇨🇱"),
+        (["NEW ZEALAND", "AUCKLAND"], "🇳🇿"),
+        (["AUSTRIA", "VIENNA"], "🇦🇹"),
+        (["IRELAND", "DUBLIN"], "🇮🇪"),
+        (["PORTUGAL", "LISBON"], "🇵🇹"),
+        (["CHINA"], "🇨🇳"),
+    ]
+
+    /// 协议行（节点名下面那行小字）：协议 / 传输 / 安全，
+    /// 如 "VLESS / WEBSOCKET / TLS"；解析不出就只给协议。
+    public static func nodeProtocolLine(for link: String) -> String {
+        let scheme = nodeScheme(for: link)
+        switch scheme {
+        case "ss": return "SHADOWSOCKS"
+        case "hysteria2", "hy2": return "HYSTERIA2"
+        case "tuic": return "TUIC"
+        case "socks", "socks5": return "SOCKS5"
+        case "anytls": return "ANYTLS"
+        case "json": return "JSON 出站"
+        case "vmess":
+            if let json = vmessJSON(for: link) {
+                var parts = ["VMESS"]
+                if let net = json["net"] as? String, let t = transportDisplayName(net) { parts.append(t) }
+                if (json["tls"] as? String) == "tls" { parts.append("TLS") }
+                return parts.joined(separator: " / ")
+            }
+            return "VMESS"
+        default:
+            var parts = [scheme.uppercased()]
+            let std = normalizedShareLink(link)
+            var query: [String: String] = [:]
+            if let comps = URLComponents(string: std), let items = comps.queryItems {
+                for item in items where query[item.name] == nil {
+                    query[item.name] = item.value ?? ""
+                }
+            }
+            if let type = query["type"], let t = transportDisplayName(type) { parts.append(t) }
+            if scheme == "trojan" {
+                parts.append(query["security"] == "none" ? "无加密" : "TLS")
+            } else if let sec = query["security"] {
+                if sec == "tls" { parts.append("TLS") }
+                else if sec == "reality" { parts.append("REALITY") }
+            }
+            return parts.joined(separator: " / ")
+        }
+    }
+
+    private static func transportDisplayName(_ raw: String) -> String? {
+        switch raw.lowercased() {
+        case "ws", "websocket": return "WEBSOCKET"
+        case "grpc": return "GRPC"
+        case "tcp", "raw": return "TCP"
+        case "h2", "http": return "HTTP/2"
+        case "quic": return "QUIC"
+        case "kcp", "mkcp": return "KCP"
+        case "xhttp": return "XHTTP"
+        case "splithttp": return "SPLITHTTP"
+        case "httpupgrade": return "HTTPUPGRADE"
+        default: return nil
+        }
+    }
+
     /// 预热：有 App 标了 VPN 且预热开关没关时，提前把核心
     /// 拉起来（用全局当前节点），第一个 VPN App 点开就不
     /// 用等冷启动。核心已经在跑就直接返回，不打扰正在用
@@ -335,7 +856,7 @@ public final class CZFVPNManager {
     /// 情况（没 App 启动过），核心随宿主进程被系统挂起，
     /// 不额外耗电
     public func prewarmIfNeeded() {
-        // 测速窗口内不预热：预热起核心会让 pingBatch 被拒、
+        // 测速窗口内不预热：预热起核心会让探针被占用挡下、
         // 测速结果不准；预热本就是 opportunistic，下次进前台还会再跑
         vpnCoreLock.lock()
         let pinging = isPinging
@@ -429,6 +950,17 @@ public final class CZFVPNManager {
                 detail = comps.port.map { "\(host):\($0)" } ?? host
             }
         }
+        // 链接自带名字之外的两个来源（都没有才落到域名兜底）：
+        // vmess 的名字在 base64 JSON 的 ps 字段里；机场小火箭
+        // 格式的 vless 链接干脆不带备注，名字是导入订阅时从
+        // Clash 格式对回来的覆盖名（见 applyNameOverrides）。
+        if name.isEmpty, nodeScheme(for: link) == "vmess",
+           let ps = vmessJSON(for: link)?["ps"] as? String, !ps.isEmpty {
+            name = ps
+        }
+        if name.isEmpty, let override = nameOverride(for: link), !override.isEmpty {
+            name = override
+        }
         if name.isEmpty {
             name = detail.isEmpty ? "节点" : detail
         }
@@ -448,6 +980,39 @@ public final class CZFVPNManager {
         return (name, detail)
     }
 
+    // MARK: - 节点名覆盖（订阅导入时从 Clash 格式对回）
+
+    private static let nameOverrideKey = "CZFVPNNodeNameOverrides"
+
+    public static func nameOverride(for link: String) -> String? {
+        (UserDefaults.standard.dictionary(forKey: nameOverrideKey) as? [String: String])?[link]
+    }
+
+    // 写入一批对回来的名字：合并进存量，并剪掉已不在节点
+    // 列表里的链接，不让这份表无限长。
+    public func applyNameOverrides(_ map: [String: String]) {
+        guard !map.isEmpty else { return }
+        var stored = (UserDefaults.standard.dictionary(forKey: Self.nameOverrideKey) as? [String: String]) ?? [:]
+        for (k, v) in map { stored[k] = v }
+        let flat = Set(nodeLinks)
+        stored = stored.filter { flat.contains($0.key) }
+        UserDefaults.standard.set(stored, forKey: Self.nameOverrideKey)
+    }
+
+    // vmess 链接的 base64 JSON 全文（ps/add/port/net/tls 都在里面）
+    private static func vmessJSON(for link: String) -> [String: Any]? {
+        guard link.hasPrefix("vmess://") else { return nil }
+        let rest = String(link.dropFirst("vmess://".count))
+        let payload = rest.split(whereSeparator: { $0 == "#" || $0 == "?" }).first.map(String.init) ?? rest
+        var b64 = payload
+            .replacingOccurrences(of: "-", with: "+")
+            .replacingOccurrences(of: "_", with: "/")
+        while b64.count % 4 != 0 { b64 += "=" }
+        guard let data = Data(base64Encoded: b64),
+              let obj = try? JSONSerialization.jsonObject(with: data) else { return nil }
+        return obj as? [String: Any]
+    }
+
     /// 节点链接的协议 scheme（小写；原始 Xray JSON 出站记
     /// 为 json；无 :// 的纯文本行记为空串）。取原文链接，
     /// 不取归一化后的（老格式 vless 归一化后 scheme 不变，
@@ -463,19 +1028,18 @@ public final class CZFVPNManager {
         return String(trimmed[..<range.lowerBound]).lowercased()
     }
 
-    /// 转换器清单分级：libXray convertShareLinksToXrayJson 只
-    /// 认这些协议族（VMessAEAD/VLESS/Hysteria2/SS/SOCKS/
-    /// Trojan）+ 原始 JSON 出站绕法 + sing-box 的 TUIC；
-    /// 其余未列出的 scheme、无 scheme 的纯文本一律不支持。
-    /// 注意这是静态分级：
-    /// 清单内的节点仍可能因老格式、allowInsecure 等参数被
-    /// 转换器拒收，那种以实测的 conversionFailed 为准。
+    /// 协议清单分级：CZFSingBoxConfig 的 sing-box 出站构建
+    /// 认这些协议族（VMess/VLESS/Hysteria2/SS/SOCKS/Trojan/
+    /// TUIC/AnyTLS）+ 原始 sing-box JSON 出站；其余未列出
+    /// 的 scheme、无 scheme 的纯文本一律不支持。注意这是
+    /// 静态分级：清单内的节点仍可能因参数缺失/不合法被
+    /// 配置生成拒收，那种以实测的 conversionFailed 为准。
     public static func isSupportedNodeScheme(_ scheme: String) -> Bool {
         // hy2 = Hysteria2 的标准别名，socks5 = SOCKS 的标准链接
         // scheme；静态分级宁可多认别名——真不认的节点实测时
         // conversionFailed 会纠回“不支持”，反过来漏标却要等
         // 实测才知道它是好的。
-        ["vmess", "vless", "hysteria2", "hy2", "ss", "socks", "socks5", "trojan", "json", "tuic"].contains(scheme)
+        ["vmess", "vless", "hysteria2", "hy2", "ss", "socks", "socks5", "trojan", "json", "tuic", "anytls"].contains(scheme)
     }
 
     public static func isEnabled(for appInfo: LCAppInfo) -> Bool {
@@ -636,7 +1200,7 @@ public final class CZFVPNManager {
                 Self.setNodeOverride(current, for: appInfo)
             }
         }
-        // 测速窗口内不开核心：这时起核心会让 pingBatch 被拒、
+        // 测速窗口内不开核心：这时起核心会让探针被占用挡下、
         // 测速结果不准。只记下这次请求，测速收尾会补跑它；取消自动
         // 停、记启动时间、补钉节点这三件上面已经做了，不受
         // 挡下影响。
@@ -749,7 +1313,7 @@ public final class CZFVPNManager {
         if isRunning && runningLink == link { return true }
         if isRunning { stop() }
 
-        // 临时探针在跑时拒绝起主核心（Xray 与 sing-box 两路都挡）：
+        // 临时探针在跑时拒绝起主核心：
         // 探针与主核心同进程只能活一个，探针起在前、主核心后起
         // 就是双运行时；探针几秒就完，拒绝后重试即可。stop()
         // 后 flag 仍为真只可能是探针（stop 成败都清 flag），
@@ -759,91 +1323,28 @@ public final class CZFVPNManager {
             return false
         }
 
-        // TUIC-only 分流：tuic 走 sing-box，其余走 245 原有
-        // Xray 转换与启动（原样不动）。分流前已停掉旧核心
+        // 全量 sing-box（2026-11-05 用户定版）：所有协议统一
+        // 由 CZFSingBoxConfig 生成配置、CZFSingBoxCore 启动，
+        // 原 Xray 转换/启动路径已删。进来前已停掉旧核心
         // （先停后起，同一时刻只活一个核心，端口复用）。
-        if CZFSingBoxRouting.coreKind(for: link) == .singBox {
-            return startSingBox(withLink: link)
-        }
-
-        let conv = invoke(method: "convertShareLinksToXrayJson", payload: ["text": Self.normalizedShareLink(link)])
-        guard let conv,
-              conv["success"] as? Bool == true,
-              let data = conv["data"] as? [String: Any],
-              var outbounds = data["outbounds"] as? [[String: Any]],
-              !outbounds.isEmpty else {
-            lastError = "节点链接解析失败：\(invokeError(from: conv) ?? "核心无应答")"
-            return false
-        }
-        var node = outbounds[0]
-        node["tag"] = "node"
-
-        let config: [String: Any] = [
-            "log": ["loglevel": "warning"],
-            "inbounds": [
-                [
-                    "tag": "socks-in",
-                    "listen": "127.0.0.1",
-                    "port": Self.socksPort,
-                    "protocol": "socks",
-                    "settings": ["auth": "noauth", "udp": false],
-                    "sniffing": ["enabled": true, "destOverride": ["http", "tls"]],
-                ] as [String: Any],
-                // HTTP 入口给 NSURLSession 配置改写用（插件把会话
-                // 的代理字典指向这里，框架自己把请求送进来）
-                [
-                    "tag": "http-in",
-                    "listen": "127.0.0.1",
-                    "port": 10828,
-                    "protocol": "http",
-                    "settings": [String: Any](),
-                ] as [String: Any],
-            ],
-            "outbounds": [
-                node,
-                ["tag": "direct", "protocol": "freedom"] as [String: Any],
-                ["tag": "block", "protocol": "blackhole"] as [String: Any],
-            ],
-            "routing": [
-                "domainStrategy": "IPIfNonMatch",
-                "rules": [["type": "field", "inboundTag": ["socks-in", "http-in"], "outboundTag": "node"]],
-            ],
-            // 隧道闲置保活拉长到 600 秒（默认 300）：X 这类间歇
-            // 小请求的 App 隔几分钟用一次，隧道被回收就要重付
-            // 一次跨欧握手，表现为时快时慢
-            "policy": [
-                "levels": ["0": ["connIdle": 600, "handshake": 4] as [String: Any]],
-            ],
-        ]
-        guard let cfgData = try? JSONSerialization.data(withJSONObject: config),
-              let cfgStr = String(data: cfgData, encoding: .utf8) else {
-            lastError = "核心配置生成失败"
-            return false
-        }
-        let resp = invoke(method: "runXray", payload: ["xrayJson": cfgStr])
-        guard let resp, resp["success"] as? Bool == true else {
-            lastError = "核心启动失败：\(invokeError(from: resp) ?? "未知错误")"
-            return false
-        }
-        isRunning = true
-        runningLink = link
-        runningCore = .xray
-        lastError = nil
-        return true
+        return startSingBox(withLink: link)
     }
 
     // sing-box 核心启动（调用方 start(withLink:) 已持锁且已
-    // 停掉旧核心，这里不再重复加锁）。配置端口与 Xray 侧复用
-    // 同一对回环端口（SOCKS 10827 / HTTP 10828），插件侧的
-    // 代理指向不用改。启动失败时 isRunning 保持 false、
-    // runningCore 保持 nil，不碰严格标记：钉死节点的 App
-    // 插件读到 CZFProxyStrict 标记仍断网不直连（fail-closed），
-    // 跟随全局的 App 维持既有 fail-open——失败本身绝不
-    // 偷偷改成直连或改标记。
+    // 停掉旧核心，这里不再重复加锁）。本地入口沿用同一对
+    // 回环端口（SOCKS 10827 / HTTP 10828），插件侧的代理
+    // 指向不用改。进配置生成前先把 vless/trojan 老格式归一
+    // 化（normalizedShareLink 对其余协议原样返回）；归一化
+    // 只影响生成的配置，runningLink 仍记原始链接（在跑检
+    // 查、钉死节点都按原文比对）。启动失败时 isRunning 保持
+    // false、runningCore 保持 nil，不碰严格标记：钉死节点
+    // 的 App 插件读到 CZFProxyStrict 标记仍断网不直连
+    // （fail-closed），跟随全局的 App 维持既有 fail-open——
+    // 失败本身绝不偷偷改成直连或改标记。
     private func startSingBox(withLink link: String) -> Bool {
         let config: String
         do {
-            config = try CZFSingBoxConfig.configJSON(for: link, socksPort: Self.socksPort, httpPort: 10828)
+            config = try CZFSingBoxConfig.configJSON(for: Self.normalizedShareLink(link), socksPort: Self.socksPort, httpPort: 10828)
         } catch {
             lastError = "节点配置生成失败：\(error.localizedDescription)"
             return false
@@ -867,15 +1368,10 @@ public final class CZFVPNManager {
         // 旧测速延迟重试链接的清理：只读版测速不再写它，
         // 这里只在非测速窗口内清掉残留，免得事后起回来。
         if !isPinging { pingRetryLink = nil }
-        // 按在跑的核心种类停对应核心（runningCore 是唯一事实
-        // 来源；nil 时走老 stopXray 路，与旧行为一致）。
-        // sing-box 的 stop 失败也吞掉（S1 语义：失败也置 false），
-        // 状态照常清干净，不留半吊子在跑态。
-        if runningCore == .singBox {
-            try? CZFSingBoxCore.stop()
-        } else {
-            _ = invoke(method: "stopXray", payload: [:])
-        }
+        // 全量 sing-box 后只有一个核心可停。stop 失败也吞掉
+        // （CZFSingBoxCore 语义：失败也置 false），状态照常
+        // 清干净，不留半吊子在跑态。
+        try? CZFSingBoxCore.stop()
         isRunning = false
         runningLink = nil
         runningCore = nil
@@ -1145,12 +1641,13 @@ public final class CZFVPNManager {
         vpnCoreLock.unlock()
     }
 
-    /// 测全部节点的延迟（libXray 的 pingBatch：临时实例并发
-    /// 测、每批最多 5 个，经节点真实发一次 HEAD 量往返）。
+    /// 测全部节点的延迟（sing-box 临时实例串行探针：逐个
+    /// 起临时实例、经节点向测速地址 host:80 发一次明文
+    /// HTTP 量真实往返）。
     /// 测速只读：绝不 stop/start 核心、不改核心启停状态，
     /// 也不在测完事后起回或校验翻盘——测速前核心在跑就
     /// 保持在跑、没在跑就保持没在跑。代价要明说：核心
-    /// 在跑时 pingBatch 可能因生命周期锁被拒，整批结果
+    /// 在跑时临时实例起不来（同进程单服务），整批结果
     /// 会是失败，此时 completion 的 rejected 为真，界面
     /// 要提示“核心在跑、测速被占用”而不是把节点标不通、
     /// 更不能用这批结果去清理节点。onPartial 在第一轮
@@ -1180,8 +1677,7 @@ public final class CZFVPNManager {
             let coreRunningAtStart = self.isRunning
             let prePingActiveLink = self.nodeLink
             self.vpnCoreLock.unlock()
-            var conversionCache: [String: String] = [:]
-            var outcome = self.runPingBatches(links: links, url: "https://cp.cloudflare.com/", phase: "测速", onProgress: onProgress, conversionCache: &conversionCache)
+            var outcome = self.runPingBatches(links: links, url: "https://cp.cloudflare.com/", phase: "测速", onProgress: onProgress)
             // 核心在跑且整批被拒 = 核心占用测速，不是节点不通：
             // 测速只读，不停车重测、不重试（重试同样会被拒，
             // 只会白白拖时间），直接把被拒结果交给界面提示。
@@ -1207,7 +1703,7 @@ public final class CZFVPNManager {
                 for retryURL in ["https://www.gstatic.com/generate_204", "https://captive.apple.com/hotspot-detect.html"] {
                     if failedIndices.isEmpty { break }
                     let failedLinks = failedIndices.map { links[$0] }
-                    let retry = self.runPingBatches(links: failedLinks, url: retryURL, phase: "重试", onProgress: onProgress, conversionCache: &conversionCache)
+                    let retry = self.runPingBatches(links: failedLinks, url: retryURL, phase: "重试", onProgress: onProgress)
                     var stillFailed: [Int] = []
                     for (j, idx) in failedIndices.enumerated() {
                         if retry.items[j].success {
@@ -1288,14 +1784,13 @@ public final class CZFVPNManager {
             let coreRunningAtStart = self.isRunning
             let prePingActiveLink = self.nodeLink
             self.vpnCoreLock.unlock()
-            var conversionCache: [String: String] = [:]
-            var outcome = self.runPingBatches(links: [link], url: "https://cp.cloudflare.com/", phase: "测速", onProgress: nil, conversionCache: &conversionCache)
+            var outcome = self.runPingBatches(links: [link], url: "https://cp.cloudflare.com/", phase: "测速", onProgress: nil)
             let pingRejected = coreRunningAtStart && outcome.batchRejected
             if !pingRejected {
                 var failed = outcome.items.first?.success == true ? [] : [0]
                 for retryURL in ["https://www.gstatic.com/generate_204", "https://captive.apple.com/hotspot-detect.html"] {
                     if failed.isEmpty { break }
-                    let retry = self.runPingBatches(links: [link], url: retryURL, phase: "重试", onProgress: nil, conversionCache: &conversionCache)
+                    let retry = self.runPingBatches(links: [link], url: retryURL, phase: "重试", onProgress: nil)
                     if retry.items.first?.success == true {
                         outcome.items[0] = retry.items[0]
                         failed = []
@@ -1337,120 +1832,49 @@ public final class CZFVPNManager {
         }
     }
 
-    /// 逐批调 pingBatch（同步阻塞，必须在后台线程调）
-    /// conversionCache：同一轮测速内复用链接转换结果。
-    /// pingAllNodes/pingSingleNode 要对不通节点走三轮地址
-    /// （Cloudflare → gstatic → Apple），原来每轮都对每个
-    /// 链接重新调一次 convertShareLinksToXrayJson；转换结果
-    /// 只取决于链接本身，与测速地址无关，所以一轮内缓存
-    /// 一次即可，缓存只活在当次测速调用内，不跨轮复用。
-    private func runPingBatches(links: [String], url: String, phase: String = "", onProgress: ((Int, Int, String) -> Void)? = nil, conversionCache: inout [String: String]) -> (items: [CZFNodePingResult], batchRejected: Bool) {
+    /// 逐个节点测延迟（同步阻塞，必须在后台线程调）。
+    /// 全量 sing-box 测速（测速只读，不动主核心）：
+    /// - 每个链接先过 CZFSingBoxConfig 配置生成校验（只生成
+    ///   不启动），生成失败记 conversionFailed（界面“不支
+    ///   持”，清理不删）；
+    /// - 生成成功的串行走临时实例探针（SOCKS 10927，一次
+    ///   只起一个）：起实例 → CZFSingBoxProbe 对本轮测速
+    ///   URL 的 host:80 做真实往返 → 停实例；
+    /// - 主核心在跑时临时实例不起（sing-box 同进程单服务），
+    ///   整轮记被拒，调用方按“核心占用”保留旧结果——界面
+    ///   层的测速流程本来就先停核心再测（用户定版规则）。
+    /// 探针目标 host 取本轮测速 URL 的 host（Cloudflare /
+    /// gstatic / Apple 三轮各不相同）；失败节点随重试轮次
+    /// 重探（最坏 3×5 秒，串行探针的固有代价）。
+    private func runPingBatches(links: [String], url: String, phase: String = "", onProgress: ((Int, Int, String) -> Void)? = nil) -> (items: [CZFNodePingResult], batchRejected: Bool) {
         var items = [CZFNodePingResult?](repeating: nil, count: links.count)
         var batchRejected = false
-        // TUIC-only 测速分流（测速只读，不动主核心）：
-        // - tuic 节点：先只做配置解析校验（不启动服务），
-        //   解析失败记 conversionFailed（界面“不支持”，清理
-        //   不删）；解析成功走临时实例探针（端口 10927，
-        //   同一时刻只起一个，串行）。
-        // - 双运行时硬规则：主核心在跑（任何一种）时，临时实
-        //   例不起；主核心是 sing-box 时，连 Xray pingBatch
-        //   也不调（整轮 rejected，复用“核心占用保留旧结果”
-        //   语义）。主核心是 Xray 时 pingBatch 照常（现有行
-        //   为：被生命周期锁拒则 batchRejected）。
-        // - 探针目标 host 取本轮测速 URL 的 host（Cloudflare /
-        //   gstatic / Apple 三轮各不相同），端口 80 明文 HTTP；
-        //   成功节点只探一次（重试只传失败下标），失败节点随
-        //   重试轮次重探（最坏 3×5 秒，文档化代价）。
         // 占用判定在函数入口抓一次（不包整段测速，见字段注释）。
         vpnCoreLock.lock()
         let mainRunning = isRunning
-        let mainCore = runningCore
         vpnCoreLock.unlock()
-        let singBoxMainRunning = mainRunning && mainCore == .singBox
-        // 先把每个链接转成出站 JSON，转不动的直接记失败
-        var pending: [(index: Int, xrayJson: String)] = []
-        var singBoxPending: [(index: Int, link: String)] = []
+        var probePending: [(index: Int, link: String)] = []
         for (i, link) in links.enumerated() {
-            // tuic 节点：只做配置解析校验，不启动服务。
-            if CZFSingBoxRouting.coreKind(for: link) == .singBox {
-                if (try? CZFSingBoxConfig.configJSON(for: link, socksPort: 10927, httpPort: nil)) != nil {
-                    singBoxPending.append((i, link))
-                } else {
-                    items[i] = CZFNodePingResult(success: false, delay: 10000, conversionFailed: true)
-                }
-                continue
-            }
             let normalized = Self.normalizedShareLink(link)
-            if let cached = conversionCache[normalized] {
-                pending.append((i, cached))
-                continue
-            }
-            let conv = invoke(method: "convertShareLinksToXrayJson", payload: ["text": normalized])
-            if let conv, conv["success"] as? Bool == true,
-               let data = conv["data"] as? [String: Any],
-               let outbounds = data["outbounds"] as? [[String: Any]], !outbounds.isEmpty,
-               let jsonData = try? JSONSerialization.data(withJSONObject: ["outbounds": outbounds]),
-               let jsonStr = String(data: jsonData, encoding: .utf8) {
-                conversionCache[normalized] = jsonStr
-                pending.append((i, jsonStr))
+            if (try? CZFSingBoxConfig.configJSON(for: normalized, socksPort: 10927, httpPort: nil)) != nil {
+                probePending.append((i, normalized))
             } else {
-                // 转换失败单记：不是网络不通，是协议不在转换器
-                // 清单里——界面据此显示“不支持”，清理不删。
                 items[i] = CZFNodePingResult(success: false, delay: 10000, conversionFailed: true)
             }
         }
-        if singBoxMainRunning {
-            // sing-box 主核心在跑：Xray pingBatch 不与它同进程
-            // 跑，整批记被拒（调用方按“核心占用”保留旧结果）。
-            if !pending.isEmpty { batchRejected = true }
-            for entry in pending {
-                items[entry.index] = CZFNodePingResult(success: false, delay: 10000)
-            }
-        } else {
-            var start = 0
-            while start < pending.count {
-                let batch = Array(pending[start..<min(start + 5, pending.count)])
-                let resp = invoke(method: "pingBatch", payload: [
-                    "configs": batch.map { ["xrayJson": $0.xrayJson] },
-                    "timeout": 5,
-                    "url": url,
-                ])
-                if let resp, resp["success"] as? Bool == true,
-                   let data = resp["data"] as? [String: Any],
-                   let results = data["results"] as? [[String: Any]] {
-                    for (j, item) in results.enumerated() where j < batch.count {
-                        let ok = item["success"] as? Bool ?? false
-                        let delay = (item["delay"] as? NSNumber)?.intValue ?? 10000
-                        items[batch[j].index] = CZFNodePingResult(success: ok, delay: delay)
-                    }
-                } else {
-                    batchRejected = true
-                }
-                for entry in batch where items[entry.index] == nil {
-                    items[entry.index] = CZFNodePingResult(success: false, delay: 10000)
-                }
-                if let onProgress {
-                    let done = items.compactMap { $0 }.count
-                    let total = links.count
-                    DispatchQueue.main.async { onProgress(done, total, phase) }
-                }
-                start += 5
-            }
-        }
-        // sing-box 临时探针（串行；主核心在跑时跳过，记被拒）。
-        if !singBoxPending.isEmpty {
+        if !probePending.isEmpty {
             if mainRunning {
                 batchRejected = true
-                for entry in singBoxPending {
+                for entry in probePending {
                     items[entry.index] = CZFNodePingResult(success: false, delay: 10000)
                 }
             } else {
                 let probeHost = URLComponents(string: url)?.host ?? ""
-                for entry in singBoxPending {
+                for entry in probePending {
                     if let result = probeSingBoxNode(link: entry.link, host: probeHost) {
                         items[entry.index] = result
                     } else {
-                        // 起探针时主核心刚跑起来：记被拒，调用方
+                        // 起探针时核心刚被别路起起来：记被拒，调用方
                         // 按“核心占用”保留旧结果（pingAllNodes /
                         // pingSingleNode 的 pingRejected 含轮末复核）。
                         batchRejected = true
@@ -1474,10 +1898,10 @@ public final class CZFVPNManager {
     /// 超时 5 秒）→ defer 里停实例。start 成功才注册 defer；
     /// start 失败直接记失败，不留实例。绝不碰主核心状态
     /// （isRunning/runningLink 不动，只动
-    /// CZFSingBoxCore.isServiceRunning）。延迟码与 Xray 侧
-    /// 对齐：被拒记 10000（界面“不通”，清理可删），超时
-    /// 或失败记 11000（界面“超时”，实际含义是超时或失败，
-    /// 不是已证实的超时——v1 已知局限，见汇报）。
+    /// CZFSingBoxCore.isServiceRunning）。延迟码约定：被拒
+    /// 记 10000（界面“不通”，清理可删），超时或失败记
+    /// 11000（界面“超时”，实际含义是超时或失败，不是已
+    /// 证实的超时——探针不区分两者的已知局限）。
     private func probeSingBoxNode(link: String, host: String) -> CZFNodePingResult? {
         vpnCoreLock.lock()
         // 主核心在跑，或上个临时实例泄漏未停（崩溃才可能），
@@ -1701,7 +2125,7 @@ public final class CZFVPNManager {
         guard Self.isHostProxyEnabled else { return }
         // 源下载开关在测速窗口内打开时也不直接起核心：它
         // 和开 App 一样是用户动作，测速收尾再补跑，免得测
-        // 速窗口内起核心让 pingBatch 被拒、测速结果不准。
+        // 速窗口内起核心让探针被占用挡下、测速结果不准。
         vpnCoreLock.lock()
         let pinging = isPinging
         if pinging {
@@ -1760,30 +2184,4 @@ public final class CZFVPNManager {
         return "插件统计（加载 \(load) · 自检 \(dict["selftest"] ?? "?")）：解析共 \(dict["gaiPass"] ?? "0") 次（假IP \(dict["gaiFake"] ?? "0")）· 代理连接 \(dict["proxied"] ?? "0") · 失败 \(dict["failed"] ?? "0") · 直连 \(dict["direct"] ?? "0") · 放行 \(dict["pass"] ?? "0") · connectx \(dict["connectx"] ?? "0")（代理 \(dict["connectxProxied"] ?? "0")）· 会话改写 \(dict["swizzled"] ?? "0") · 配置改写 \(dict["cfg"] ?? "0") · 拦QUIC \(dict["quic"] ?? "0") · QUIC代理 \(dict["quicProxied"] ?? "0")"
     }
 
-    // MARK: - libXray 调用
-
-    private func invokeError(from resp: [String: Any]?) -> String? {
-        guard let resp else { return nil }
-        let err = resp["error"] as? String
-        return (err?.isEmpty == false) ? err : nil
-    }
-
-    private func invoke(method: String, payload: [String: Any]) -> [String: Any]? {
-        let request: [String: Any] = ["apiVersion": 3, "method": method, "payload": payload]
-        guard let reqData = try? JSONSerialization.data(withJSONObject: request),
-              let reqStr = String(data: reqData, encoding: .utf8),
-              let cReq = strdup(reqStr) else {
-            return nil
-        }
-        defer { free(cReq) }
-        guard let cResp = CGoInvoke(cReq) else { return nil }
-        defer { CGoFree(cResp) }
-        let respStr = String(cString: cResp)
-        guard let respData = respStr.data(using: .utf8),
-              let obj = try? JSONSerialization.jsonObject(with: respData),
-              let dict = obj as? [String: Any] else {
-            return nil
-        }
-        return dict
-    }
 }

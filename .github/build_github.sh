@@ -6,11 +6,21 @@ brew install ldid
 # move lc to working folder
 mv "$archive_path.xcarchive/Products/Applications" Payload
 
+# 瘦身：删掉 Payload 里所有 Mach-O 的本地符号（-S 保留导出符号、-x 删
+# 本地符号）。本地符号表运行时用不到，功能不变；单个文件失败不中断打包。
+# 两个 IPA 共用这份 Payload，在此一次处理即全覆盖（SideStore 的二进制在
+# 它自己的拼装处另有处理，因为它在本步之后才下载进来）
+find Payload -type f | while IFS= read -r f; do
+  if file "$f" | grep -q "Mach-O"; then
+    strip -S -x "$f" 2>/dev/null || true
+  fi
+done
+
 # temporarily move sidestore support framrwork to tmp before zip
 mkdir tmp
 mv Payload/LiveContainer.app/Frameworks/SideStoreSupport.framework ./tmp
 
-zip -r "$scheme.ipa" "Payload" -x "._*" -x ".DS_Store" -x "__MACOSX"
+zip -9 -r "$scheme.ipa" "Payload" -x "._*" -x ".DS_Store" -x "__MACOSX"
 
 mv ./tmp/SideStoreSupport.framework Payload/LiveContainer.app/Frameworks
 
@@ -47,6 +57,13 @@ cd ..
 
 # SideStore
 mv ./tmp/Payload/SideStore.app ./Payload/LiveContainer.app/Frameworks/SideStoreApp.framework
+# 瘦身：同样删掉 SideStore 这边所有 Mach-O 的本地符号；主程序在下面
+# dylibify + ldid 时会重新封印，小组件也会在后面单独 ldid，不受影响
+find ./Payload/LiveContainer.app/Frameworks/SideStoreApp.framework -type f | while IFS= read -r f; do
+  if file "$f" | grep -q "Mach-O"; then
+    strip -S -x "$f" 2>/dev/null || true
+  fi
+done
 ./dylibify ./Payload/LiveContainer.app/Frameworks/SideStoreApp.framework/SideStore ./Payload/LiveContainer.app/Frameworks/SideStoreApp.framework/SideStore.dylib
 rm ./Payload/LiveContainer.app/Frameworks/SideStoreApp.framework/SideStore
 mv ./Payload/LiveContainer.app/Frameworks/SideStoreApp.framework/SideStore.dylib ./Payload/LiveContainer.app/Frameworks/SideStoreApp.framework/SideStore
@@ -73,4 +90,4 @@ find payloadlc/Payload -type d -name "_CodeSignature" -exec rm -r {} +
 ldid -S.github/sidelc/LiveWidgetExtension_adhoc.xml ./Payload/LiveContainer.app/PlugIns/LiveWidgetExtension.appex/LiveWidgetExtension
 
 # package
-zip -r "$scheme+SideStore.ipa" "Payload" -x "._*" -x ".DS_Store" -x "__MACOSX"
+zip -9 -r "$scheme+SideStore.ipa" "Payload" -x "._*" -x ".DS_Store" -x "__MACOSX"

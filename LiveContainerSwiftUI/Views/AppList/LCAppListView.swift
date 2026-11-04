@@ -360,8 +360,14 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
 
                         }
                     } else {
-                        Button("Help", systemImage: "questionmark") {
-                            helpPresent = true
+                        // 单文件版（无内置 SideStore）：原「?」帮助按钮换成
+                        // 与签名相同的图标，点击直接跳到 Sidekite 应用
+                        Button {
+                            if let url = URL(string: "sidekite://") {
+                                UIApplication.shared.open(url)
+                            }
+                        } label: {
+                            Label("Sidekite", systemImage: "signature")
                         }
                     }
                     

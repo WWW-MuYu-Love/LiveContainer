@@ -2,20 +2,20 @@ import Foundation
 
 // CZFSingBoxConfig.swift
 //
-// 职责：sing-box 分流判定 + TUIC 配置 JSON 生成（TUIC-only：
-// 245 + 仅 TUIC，sing-box 只跑 TUIC 出站，其余协议一律走
-// 245 原有的 Xray 路径）。
+// 职责：sing-box 分流判定 + 全部协议的配置 JSON 生成。
+// 2026-11-05 用户定版全量 sing-box：原 TUIC-only 分流取消，
+// vless/vmess/trojan/ss/hysteria2/socks/tuic/anytls 与原始
+// sing-box JSON 出站都由本文件生成出站，原 Xray 路径已删。
 // 只含纯函数与静态方法：不调用任何 Libbox/CGo 函数，不碰 UserDefaults，
 // 不读写文件、不联网。配置一律用 JSONSerialization 拼（不许字符串插值），
 // 密码/密钥里含引号、反斜杠也不会打断 JSON。
 //
 // 与 CZFVPNManager 的衔接：
-// CZFVPNManager.nodeScheme / isSupportedNodeScheme 是协议清单
-// （Xray 转换器清单 + TUIC）。
-// 本文件的 coreKind 是在其之上的第二层分流：tuic 走 sing-box，
-// 其余一律走 Xray（245 原有路径）。调用顺序：先查 coreKind，
-// tuic 时生成 sing-box 配置并起 sing-box 核心；非 tuic 时走
-// 245 的 Xray 转换与启动，原样不动。
+// CZFVPNManager.nodeScheme / isSupportedNodeScheme 是协议清单，
+// 本文件的 coreKind 恒为 singBox（保留接口是给旧调用点兼容）。
+// 调用方（CZFVPNManager）在调 configJSON 前先对 vless/trojan
+// 做 normalizedShareLink 归一化（老格式/小火箭参数翻译），
+// 本文件只认标准格式链接。
 // 本地无 Swift 工具链：括号平衡 ≠ 编译通过，需 CI 验证。
 
 /// 核心分流结果。xray = 走 Xray（含“不走 sing-box”的一切情况）。
@@ -112,20 +112,29 @@ public enum CZFSingBoxRouting {
 
     // MARK: 对外接口
 
-    /// 分流主入口（TUIC-only）：tuic 走 sing-box，其余一律
-    /// 走 Xray（245 原有路径；Xray 转换器认不认由转换器
-    /// 自己决定，这里不替它背书，也不替它拒收）。
+    /// 分流主入口：全量 sing-box 后恒为 singBox（Xray 路径
+    /// 已删）。保留这个接口是给旧调用点兼容，新代码直接
+    /// 按 sing-box 处理即可。
     public static func coreKind(for link: String) -> CZFCoreKind {
-        if scheme(of: link) == "tuic" { return .singBox }
-        return .xray
+        return .singBox
     }
 
-    /// 行内“不验证书”标记判定：tuic 且含 allowInsecure 时标
-    /// （tuic 出站一定写 tls 块，insecure 参数真实生效）。
-    /// 调用方是 CZFVPNManager.nodeDisplay（行内 scheme 显示处）。
+    /// 行内“不验证书”标记判定：链接带 allowInsecure 类参数
+    /// 且该协议的出站真的会写 tls.insecure 时才标（tuic /
+    /// anytls / trojan / hysteria2 恒有 tls；vless 只在
+    /// security=tls 时；vmess 的 insecure 在 JSON 里、不走
+    /// query，保守不标）。调用方是 CZFVPNManager.nodeDisplay。
     public static func showsInsecureMark(for link: String) -> Bool {
-        guard scheme(of: link) == "tuic" else { return false }
-        return isInsecureNode(link)
+        guard isInsecureNode(link) else { return false }
+        switch scheme(of: link) {
+        case "tuic", "anytls", "trojan", "hysteria2", "hy2":
+            return true
+        case "vless":
+            let security = (firstQuery(queryMap(of: link), "security") ?? "").lowercased()
+            return security == "tls"
+        default:
+            return false
+        }
     }
 }
 
@@ -226,6 +235,384 @@ public enum CZFSingBoxConfig {
         return out
     }
 
+    // MARK: TLS / 传输层（多协议共用）
+
+    /// security 参数 → tls 块：reality（utls + reality 一起写，
+    /// 指纹缺省 chrome——Reality 没有 utls 握手根本不成立，
+    /// 构建侧已带 with_utls 标签）/ tls / 其余返回 nil 不写 tls。
+    static func securityTlsBlock(_ map: [String: [String]]) -> [String: Any]? {
+        let security = (CZFSingBoxRouting.firstQuery(map, "security") ?? "").lowercased()
+        let tlsP = tlsParams(map)
+        if security == "reality" {
+            var tls = tlsBlock(serverName: tlsP.serverName, alpn: tlsP.alpn, insecure: false)
+            let fp = CZFSingBoxRouting.firstQuery(map, "fp", "fingerprint") ?? "chrome"
+            tls["utls"] = ["enabled": true, "fingerprint": fp]
+            var reality: [String: Any] = ["enabled": true]
+            if let pbk = CZFSingBoxRouting.firstQuery(map, "pbk", "publicKey") {
+                reality["public_key"] = pbk
+            }
+            if let sid = CZFSingBoxRouting.firstQuery(map, "sid", "shortId") {
+                reality["short_id"] = sid
+            }
+            tls["reality"] = reality
+            return tls
+        }
+        if security == "tls" {
+            return tlsBlock(serverName: tlsP.serverName, alpn: tlsP.alpn, insecure: tlsP.insecure)
+        }
+        return nil
+    }
+
+    /// 传输层块：ws / grpc / http(h2) / splithttp / httpupgrade；
+    /// tcp 或不认识的值返回 nil（不写 transport，走默认 TCP）。
+    static func transportBlock(_ map: [String: [String]]) -> [String: Any]? {
+        let type = (CZFSingBoxRouting.firstQuery(map, "type", "net") ?? "tcp").lowercased()
+        switch type {
+        case "ws", "websocket":
+            var t: [String: Any] = ["type": "ws"]
+            if let path = CZFSingBoxRouting.firstQuery(map, "path") { t["path"] = path }
+            if let host = CZFSingBoxRouting.firstQuery(map, "host") { t["headers"] = ["Host": host] }
+            return t
+        case "grpc":
+            var t: [String: Any] = ["type": "grpc"]
+            if let sn = CZFSingBoxRouting.firstQuery(map, "serviceName", "service_name") { t["service_name"] = sn }
+            return t
+        case "http", "h2":
+            var t: [String: Any] = ["type": "http"]
+            if let host = CZFSingBoxRouting.firstQuery(map, "host") { t["host"] = [host] }
+            if let path = CZFSingBoxRouting.firstQuery(map, "path") { t["path"] = path }
+            return t
+        case "splithttp", "xhttp":
+            var t: [String: Any] = ["type": "splithttp"]
+            if let host = CZFSingBoxRouting.firstQuery(map, "host") { t["host"] = host }
+            if let path = CZFSingBoxRouting.firstQuery(map, "path") { t["path"] = path }
+            return t
+        case "httpupgrade":
+            var t: [String: Any] = ["type": "httpupgrade"]
+            if let host = CZFSingBoxRouting.firstQuery(map, "host") { t["host"] = host }
+            if let path = CZFSingBoxRouting.firstQuery(map, "path") { t["path"] = path }
+            return t
+        default:
+            return nil
+        }
+    }
+
+    /// 宽容 base64 解码（标准/URL 安全变体、缺 padding 都认），失败返回 nil。
+    static func base64DecodeString(_ s: String) -> String? {
+        var b64 = s.trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "-", with: "+")
+            .replacingOccurrences(of: "_", with: "/")
+        while b64.count % 4 != 0 { b64 += "=" }
+        guard let data = Data(base64Encoded: b64) else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
+    /// JSON 字段的整数读法（NSNumber 与字符串数字都认）。
+    static func intValue(_ any: Any?) -> Int? {
+        if let n = any as? NSNumber { return n.intValue }
+        if let s = any as? String { return Int(s) }
+        return nil
+    }
+
+    // MARK: VLESS 出站
+
+    /// vless：uuid@服务器:端口；flow（vision）只在 TCP 直连
+    /// 时写（带传输层写上核心会拒）；tls/reality 走 security。
+    static func vlessOutbound(link: String) throws -> [String: Any] {
+        guard let comps = components(of: link), comps.scheme?.lowercased() == "vless" else {
+            throw CZFSingBoxConfigError.unsupportedScheme("vless")
+        }
+        guard let uuid = comps.user, !uuid.isEmpty else {
+            throw CZFSingBoxConfigError.missingField("uuid")
+        }
+        guard UUID(uuidString: uuid) != nil else {
+            throw CZFSingBoxConfigError.invalidValue("uuid")
+        }
+        let server = try requireHost(comps)
+        let port = try requirePort(comps)
+        let map = CZFSingBoxRouting.queryMap(of: link)
+        var out: [String: Any] = [
+            "type": "vless",
+            "tag": CZFSingBoxRouting.nodeTag,
+            "server": server,
+            "server_port": port,
+            "uuid": uuid,
+        ]
+        let network = (CZFSingBoxRouting.firstQuery(map, "type", "net") ?? "tcp").lowercased()
+        if network == "tcp", let flow = CZFSingBoxRouting.firstQuery(map, "flow"), !flow.isEmpty {
+            out["flow"] = flow
+        }
+        if let transport = transportBlock(map) { out["transport"] = transport }
+        if let tls = securityTlsBlock(map) { out["tls"] = tls }
+        return out
+    }
+
+    // MARK: VMess 出站
+
+    /// vmess 链接的 base64 JSON 全文，解析失败返回 nil。
+    static func vmessPayload(_ link: String) -> [String: Any]? {
+        let rest = String(link.trimmingCharacters(in: .whitespacesAndNewlines).dropFirst("vmess://".count))
+        let payload = rest.split(whereSeparator: { $0 == "#" || $0 == "?" }).first.map(String.init) ?? rest
+        guard let text = base64DecodeString(payload),
+              let data = text.data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: data) else { return nil }
+        return obj as? [String: Any]
+    }
+
+    /// vmess：参数都在 JSON 里（add/port/id/aid/scy/net/host/
+    /// path/tls/sni/alpn）；传输层借 transportBlock 的 query
+    /// 语义，把 JSON 字段折成同名 map 再用。
+    static func vmessOutbound(link: String) throws -> [String: Any] {
+        guard let json = vmessPayload(link) else {
+            throw CZFSingBoxConfigError.invalidValue("vmess")
+        }
+        guard let server = json["add"] as? String, !server.isEmpty else {
+            throw CZFSingBoxConfigError.missingField("server")
+        }
+        guard let port = intValue(json["port"]), (1...65535).contains(port) else {
+            throw CZFSingBoxConfigError.missingField("server_port")
+        }
+        guard let uuid = json["id"] as? String, !uuid.isEmpty else {
+            throw CZFSingBoxConfigError.missingField("uuid")
+        }
+        var out: [String: Any] = [
+            "type": "vmess",
+            "tag": CZFSingBoxRouting.nodeTag,
+            "server": server,
+            "server_port": port,
+            "uuid": uuid,
+            "alter_id": intValue(json["aid"]) ?? 0,
+            "security": (json["scy"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? "auto",
+        ]
+        let net = (json["net"] as? String) ?? "tcp"
+        var map: [String: [String]] = ["type": [net]]
+        if let host = json["host"] as? String, !host.isEmpty { map["host"] = [host] }
+        if let path = json["path"] as? String, !path.isEmpty {
+            map["path"] = [path]
+            map["serviceName"] = [path]
+        }
+        if net.lowercased() != "tcp", let t = transportBlock(map) { out["transport"] = t }
+        if (json["tls"] as? String) == "tls" {
+            let alpn = (json["alpn"] as? String)?
+                .split(separator: ",")
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+                .filter { !$0.isEmpty } ?? []
+            let insecure = (json["allowInsecure"] as? String) == "1" || (json["allowInsecure"] as? Bool) == true
+            out["tls"] = tlsBlock(serverName: json["sni"] as? String, alpn: alpn, insecure: insecure)
+        }
+        return out
+    }
+
+    // MARK: Trojan 出站
+
+    /// trojan：密码在 userinfo；默认带 TLS（security=none 才
+    /// 不带）；security=reality 时与 vless 同路。
+    static func trojanOutbound(link: String) throws -> [String: Any] {
+        guard let comps = components(of: link), comps.scheme?.lowercased() == "trojan" else {
+            throw CZFSingBoxConfigError.unsupportedScheme("trojan")
+        }
+        guard let password = comps.user, !password.isEmpty else {
+            throw CZFSingBoxConfigError.missingField("password")
+        }
+        let server = try requireHost(comps)
+        let port = try requirePort(comps)
+        let map = CZFSingBoxRouting.queryMap(of: link)
+        var out: [String: Any] = [
+            "type": "trojan",
+            "tag": CZFSingBoxRouting.nodeTag,
+            "server": server,
+            "server_port": port,
+            "password": password,
+        ]
+        if let transport = transportBlock(map) { out["transport"] = transport }
+        let security = (CZFSingBoxRouting.firstQuery(map, "security") ?? "").lowercased()
+        if security != "none" {
+            if let tls = securityTlsBlock(map) {
+                out["tls"] = tls
+            } else {
+                let tlsP = tlsParams(map)
+                out["tls"] = tlsBlock(serverName: tlsP.serverName, alpn: tlsP.alpn, insecure: tlsP.insecure)
+            }
+        }
+        return out
+    }
+
+    // MARK: Shadowsocks 出站
+
+    /// ss：三种写法都认——SIP002（userinfo 是 base64 的
+    /// method:password 或明文 method:password）、老格式
+    /// （整段 authority 是 base64 的 method:password@host:port）。
+    /// plugin 参数（obfs-local / v2ray-plugin）原样折成
+    /// plugin + plugin_opts。
+    static func shadowsocksOutbound(link: String) throws -> [String: Any] {
+        let trimmed = link.trimmingCharacters(in: .whitespacesAndNewlines)
+        var method: String?
+        var password: String?
+        var server: String?
+        var port: Int?
+        if let comps = components(of: link), let host = comps.host, let p = comps.port {
+            server = host
+            port = p
+            if let pw = comps.password, let user = comps.user {
+                method = user
+                password = pw
+            } else if let user = comps.user, let decoded = base64DecodeString(user),
+                      let colon = decoded.firstIndex(of: ":") {
+                method = String(decoded[..<colon])
+                password = String(decoded[decoded.index(after: colon)...])
+            }
+        } else {
+            // 老格式：ss:// 后到 # 或 ? 为止整段是 base64
+            var authority = String(trimmed.dropFirst("ss://".count))
+            if let cut = authority.firstIndex(where: { $0 == "#" || $0 == "?" }) {
+                authority = String(authority[..<cut])
+            }
+            if let decoded = base64DecodeString(authority), let at = decoded.lastIndex(of: "@") {
+                let cred = decoded[..<at]
+                let hp = decoded[decoded.index(after: at)...]
+                if let colon = cred.firstIndex(of: ":") {
+                    method = String(cred[..<colon])
+                    password = String(cred[cred.index(after: colon)...])
+                }
+                if let colon = hp.lastIndex(of: ":"), let p = Int(hp[hp.index(after: colon)...]) {
+                    server = String(hp[..<colon])
+                    port = p
+                }
+            }
+        }
+        guard let method, !method.isEmpty else { throw CZFSingBoxConfigError.missingField("method") }
+        guard let password else { throw CZFSingBoxConfigError.missingField("password") }
+        guard let server, !server.isEmpty else { throw CZFSingBoxConfigError.missingField("server") }
+        guard let port, (1...65535).contains(port) else { throw CZFSingBoxConfigError.missingField("server_port") }
+        var out: [String: Any] = [
+            "type": "shadowsocks",
+            "tag": CZFSingBoxRouting.nodeTag,
+            "server": server,
+            "server_port": port,
+            "method": method,
+            "password": password,
+        ]
+        let map = CZFSingBoxRouting.queryMap(of: link)
+        if let plugin = CZFSingBoxRouting.firstQuery(map, "plugin") {
+            let parts = plugin.split(separator: ";", maxSplits: 1, omittingEmptySubsequences: false)
+            out["plugin"] = String(parts[0])
+            if parts.count > 1 { out["plugin_opts"] = String(parts[1]) }
+        }
+        return out
+    }
+
+    // MARK: Hysteria2 出站
+
+    /// hysteria2 / hy2：userinfo 整段是密码（含冒号时按原文
+    /// 拼回）；obfs-password → salamander 混淆；TLS 必带，
+    /// insecure 是机场节点的常态参数，如实透传。
+    static func hysteria2Outbound(link: String) throws -> [String: Any] {
+        guard let comps = components(of: link) else {
+            throw CZFSingBoxConfigError.unsupportedScheme("hysteria2")
+        }
+        let password: String
+        if let user = comps.user, !user.isEmpty {
+            password = comps.password.map { "\(user):\($0)" } ?? user
+        } else {
+            throw CZFSingBoxConfigError.missingField("password")
+        }
+        let server = try requireHost(comps)
+        let port = try requirePort(comps)
+        let map = CZFSingBoxRouting.queryMap(of: link)
+        var out: [String: Any] = [
+            "type": "hysteria2",
+            "tag": CZFSingBoxRouting.nodeTag,
+            "server": server,
+            "server_port": port,
+            "password": password,
+        ]
+        if let obfs = CZFSingBoxRouting.firstQuery(map, "obfs-password", "obfs_password"), !obfs.isEmpty {
+            out["obfs"] = ["type": "salamander", "password": obfs]
+        }
+        let tlsP = tlsParams(map)
+        out["tls"] = tlsBlock(serverName: tlsP.serverName, alpn: tlsP.alpn, insecure: tlsP.insecure)
+        return out
+    }
+
+    // MARK: SOCKS 出站
+
+    /// socks / socks5：userinfo 可缺（无认证）。
+    static func socksOutbound(link: String) throws -> [String: Any] {
+        guard let comps = components(of: link) else {
+            throw CZFSingBoxConfigError.unsupportedScheme("socks")
+        }
+        let server = try requireHost(comps)
+        let port = try requirePort(comps)
+        var out: [String: Any] = [
+            "type": "socks",
+            "tag": CZFSingBoxRouting.nodeTag,
+            "server": server,
+            "server_port": port,
+            "version": "5",
+        ]
+        if let user = comps.user, !user.isEmpty {
+            out["username"] = user
+            out["password"] = comps.password ?? ""
+        }
+        return out
+    }
+
+    // MARK: AnyTLS 出站
+
+    /// anytls：userinfo 整段是密码；TLS 必带（sni/insecure
+    /// 如实透传）。sing-box 1.12+ 原生协议，钉版 1.14.4 支持。
+    static func anytlsOutbound(link: String) throws -> [String: Any] {
+        guard let comps = components(of: link), comps.scheme?.lowercased() == "anytls" else {
+            throw CZFSingBoxConfigError.unsupportedScheme("anytls")
+        }
+        let password: String
+        if let user = comps.user, !user.isEmpty {
+            password = comps.password.map { "\(user):\($0)" } ?? user
+        } else {
+            throw CZFSingBoxConfigError.missingField("password")
+        }
+        let server = try requireHost(comps)
+        let port = try requirePort(comps)
+        let map = CZFSingBoxRouting.queryMap(of: link)
+        var out: [String: Any] = [
+            "type": "anytls",
+            "tag": CZFSingBoxRouting.nodeTag,
+            "server": server,
+            "server_port": port,
+            "password": password,
+        ]
+        let tlsP = tlsParams(map)
+        out["tls"] = tlsBlock(serverName: tlsP.serverName, alpn: tlsP.alpn, insecure: tlsP.insecure)
+        return out
+    }
+
+    // MARK: 原始 JSON 出站
+
+    /// json：整条链接就是一份 sing-box 出站 JSON（对象带
+    /// type 就直接用；带 outbounds 数组就取第一个出站），
+    /// tag 强制改成统一的 node-out。全量 sing-box 后这里认
+    /// 的是 sing-box 格式，老 Xray 格式 JSON 不再适用。
+    static func jsonOutbound(link: String) throws -> [String: Any] {
+        let trimmed = link.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let data = trimmed.data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: data),
+              let dict = obj as? [String: Any] else {
+            throw CZFSingBoxConfigError.invalidValue("json")
+        }
+        if let type = dict["type"] as? String, !type.isEmpty {
+            var out = dict
+            out["tag"] = CZFSingBoxRouting.nodeTag
+            return out
+        }
+        if let arr = dict["outbounds"] as? [[String: Any]], let first = arr.first,
+           let type = first["type"] as? String, !type.isEmpty {
+            var out = first
+            out["tag"] = CZFSingBoxRouting.nodeTag
+            return out
+        }
+        throw CZFSingBoxConfigError.invalidValue("json")
+    }
+
     // MARK: 对外接口
 
     /// 生成完整 sing-box 配置 JSON（JSONSerialization，sortedKeys）。
@@ -233,9 +620,11 @@ public enum CZFSingBoxConfig {
     /// dns.servers=[{tag:local,type:local}] + final=local；
     /// inbounds：mixed（listen 127.0.0.1，listen_port=socksPort），
     /// httpPort 非 nil 时再加一个 http 入站（listen_port=httpPort）；
-    /// route.final=node-out；outbounds=[tuic 出站]。
-    /// 非 tuic 节点一律 throw notSingBoxNode（调用方先按
-    /// coreKind 分流，只在 tuic 时调用）。
+    /// route.final=node-out；outbounds=[该节点的 sing-box 出站]。
+    /// 协议分发：vless/vmess/trojan/shadowsocks/hysteria2/
+    /// socks/tuic/anytls 各有构建函数，json 走原始出站透传，
+    /// 其余 scheme throw unsupportedScheme（调用方据此判
+    /// “转换失败”，与旧 Xray 转换器的失败语义一致）。
     /// 主用例：socksPort=10827、httpPort=10828；测速临时实例：
     /// socksPort=10927、httpPort=nil（不建 http 入站）。
     public static func configJSON(for link: String, socksPort: Int, httpPort: Int?) throws -> String {
@@ -248,10 +637,29 @@ public enum CZFSingBoxConfig {
             }
         }
         let scheme = CZFSingBoxRouting.scheme(of: link)
-        guard scheme == "tuic" else {
-            throw CZFSingBoxConfigError.notSingBoxNode
+        let outbound: [String: Any]
+        switch scheme {
+        case "tuic":
+            outbound = try tuicOutbound(link: link)
+        case "vless":
+            outbound = try vlessOutbound(link: link)
+        case "vmess":
+            outbound = try vmessOutbound(link: link)
+        case "trojan":
+            outbound = try trojanOutbound(link: link)
+        case "ss", "shadowsocks":
+            outbound = try shadowsocksOutbound(link: link)
+        case "hysteria2", "hy2":
+            outbound = try hysteria2Outbound(link: link)
+        case "socks", "socks5":
+            outbound = try socksOutbound(link: link)
+        case "anytls":
+            outbound = try anytlsOutbound(link: link)
+        case "json":
+            outbound = try jsonOutbound(link: link)
+        default:
+            throw CZFSingBoxConfigError.unsupportedScheme(scheme)
         }
-        let outbound = try tuicOutbound(link: link)
 
         var inbounds: [[String: Any]] = [[
             "type": "mixed",
