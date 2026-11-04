@@ -1,0 +1,62 @@
+# Codemagic 构建线（与 GitHub Actions 并行的第三个池子，2026-11-05 加）
+# 步骤与 .github/workflows/build.yml 的 Build job 一一对应：
+# 编 Libbox → xcodebuild archive → 编三个内置 dylib → build_github.sh 打包。
+# 产物两个 IPA 作为 Codemagic artifacts 留存，发布仍走 GitHub Release 流程。
+workflows:
+  livecontainer-ios:
+    name: LiveContainer iOS
+    instance_type: mac_mini_m2
+    max_build_duration: 120
+    environment:
+      xcode: 26.2
+      vars:
+        scheme: LiveContainer
+        archive_path: archive
+    scripts:
+      - name: Init submodules
+        script: |
+          git submodule update --init --recursive
+      - name: Ensure Go
+        script: |
+          command -v go >/dev/null 2>&1 || brew install go
+          go version
+      - name: Build Libbox.xcframework (sing-box core)
+        script: |
+          cd SingBoxGo
+          go install golang.org/x/mobile/cmd/gomobile@latest
+          gomobile init
+          go get -tool golang.org/x/mobile/cmd/gobind
+          go mod tidy
+          mkdir -p ../Vendor
+          gomobile bind -ldflags "-s -w" -target ios/arm64 -tags "with_quic,with_utls" -o ../Vendor/Libbox.xcframework ./libbox
+          ls ../Vendor/Libbox.xcframework
+      - name: Archive
+        script: |
+          xcodebuild archive -archivePath "$archive_path" -scheme "$scheme" -project LiveContainer.xcodeproj -sdk iphoneos -arch arm64 -configuration Release
+      - name: Build bundled tweaks
+        script: |
+          clang -arch arm64 -isysroot $(xcrun --sdk iphoneos --show-sdk-path) \
+            -mios-version-min=14.0 -fobjc-arc -dynamiclib \
+            -framework UIKit -framework Foundation -framework AVFoundation \
+            -o CZFKeepAlive.dylib BundledTweaks/CZFKeepAlive.m
+          cp CZFKeepAlive.dylib "$archive_path.xcarchive/Products/Applications/LiveContainer.app/CZFKeepAlive.dylib"
+          clang -arch arm64 -isysroot $(xcrun --sdk iphoneos --show-sdk-path) \
+            -mios-version-min=14.0 -fobjc-arc -dynamiclib \
+            -framework Foundation -framework Security \
+            -o CZFKeychainBridge.dylib BundledTweaks/CZFKeychainBridge.m
+          cp CZFKeychainBridge.dylib "$archive_path.xcarchive/Products/Applications/LiveContainer.app/CZFKeychainBridge.dylib"
+          clang -arch arm64 -isysroot $(xcrun --sdk iphoneos --show-sdk-path) \
+            -mios-version-min=14.0 -fobjc-arc -dynamiclib \
+            -framework Foundation \
+            -I litehook/src -I litehook/external/include \
+            -o CZFProxy.dylib BundledTweaks/CZFProxy.m litehook/src/litehook.c
+          cp CZFProxy.dylib "$archive_path.xcarchive/Products/Applications/LiveContainer.app/CZFProxy.dylib"
+          ls -la "$archive_path.xcarchive/Products/Applications/LiveContainer.app/"*.dylib
+      - name: Create IPA
+        script: |
+          command -v wget >/dev/null 2>&1 || brew install wget
+          sh .github/build_github.sh
+          ls -lh *.ipa
+    artifacts:
+      - LiveContainer.ipa
+      - LiveContainer+SideStore.ipa
