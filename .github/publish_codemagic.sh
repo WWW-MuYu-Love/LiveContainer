@@ -21,14 +21,23 @@ API="https://api.github.com/repos/$REPO"
 UPLOADS="https://uploads.github.com/repos/$REPO"
 AUTH=(-H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28")
 
-# 先普通赋值再统一 export：macOS 自带 bash 3.2 下，
-# export VAR=$(...) 的命令替换一旦失败，变量会保持未绑定，
-# 后面 set -u 展开时直接报 unbound variable（构建 #5 实测
-# 死在这里）。git log 加 || true 兜底，MSG 再给默认文案。
-SHA=$(git rev-parse HEAD)
-MSG=$(git log -1 --pretty=%s || true)
-MSG=${MSG:-"（无提交信息）"}
-VER=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" LiveContainer/Info.plist)
+# 变量先全部给默认值再逐个赋值：构建 #5、#6 两次实测都
+# 死在 line 34 的 echo 报 MSG unbound——赋值明明在前面，
+# 说明 runner 上某条命令替换会让整段赋值失效（git 在
+# Codemagic 检出目录可能因 dubious ownership 整体不可用）。
+# 先绑默认值，set -u 就永远有值可展开；提交号优先用
+# Codemagic 自带的 CM_COMMIT，git 只作兜底。
+SHA=""
+MSG="（无提交信息）"
+VER=""
+BUILD_LINK="https://codemagic.io"
+SHA=${CM_COMMIT:-$(git rev-parse HEAD 2>/dev/null || true)}
+GIT_MSG=$(git log -1 --pretty=%s 2>/dev/null || true)
+if [ -n "$GIT_MSG" ]; then MSG="$GIT_MSG"; fi
+VER=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" LiveContainer/Info.plist 2>/dev/null || true)
+if [ -z "$VER" ]; then
+  VER=$(grep -A1 CFBundleShortVersionString LiveContainer/Info.plist | grep -o '[0-9][0-9.]*' | head -1 || true)
+fi
 BUILD_LINK="${CM_BUILD_URL:-https://codemagic.io}"
 export SHA MSG VER BUILD_LINK
 echo "发版目标：$REPO 版本 $VER 提交 ${SHA:0:7}（$MSG）"
