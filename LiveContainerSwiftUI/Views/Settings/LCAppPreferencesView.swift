@@ -17,6 +17,10 @@ struct LCAppPreferencesView: View {
     @AppStorage("LCOpenWebPageWithoutAsking") var silentOpenWebPage = false
     @AppStorage("LCDontSignApp", store: LCUtils.appGroupUserDefault) var dontSignApp = false
     @AppStorage("LCStrictHiding", store: LCUtils.appGroupUserDefault) var strictHiding = false
+    @AppStorage("dynamicColors", store: LCUtils.appGroupUserDefault) var dynamicColors = true
+    @AppStorage("darkModeIcon", store: LCUtils.appGroupUserDefault) var darkModeIcon = false
+
+    private var store: Store { LCUtils.store() }
 
     @State private var notificationAuthStatus: UNAuthorizationStatus = .notDetermined
 
@@ -136,8 +140,95 @@ struct LCAppPreferencesView: View {
                 refreshNotificationAuth()
             }
             }
+            interfaceSection
+            multiLCSection
+            multitaskSection
         }
         .navigationTitle("应用设置")
+    }
+
+    @ViewBuilder private var interfaceSection: some View {
+        // 界面区：说明从 footer 挪到各行下面的小字，
+        // 深色图标那行原来没有说明（footer 只讲动态颜色），
+        // 现在补上“横幅用 App 的深色图标”，两行说明各对各行。
+        Section{
+            Toggle(isOn: $dynamicColors) {
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack {
+                        LCSettingsIcon(systemName: "paintpalette.fill", color: .purple)
+                        Text("lc.settings.dynamicColors".loc)
+                    }
+                    Text("lc.settings.dynamicColors.desc".loc)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            if #available(iOS 18.0, *) {
+                Toggle(isOn: $darkModeIcon) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack {
+                            LCSettingsIcon(systemName: "moon.fill", color: .indigo)
+                            Text("lc.settings.darkModeIcon".loc)
+                        }
+                        Text("App 横幅用 App 的深色图标")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+        } header: {
+            Text("lc.settings.interface".loc)
+        }
+    }
+
+    @ViewBuilder private var multiLCSection: some View {
+        if (store != .Unknown && store != .ADP) || LCUtils.isAppGroupAltStoreLike() {
+            Section{
+                NavigationLink {
+                    LCMultiLCManagementView()
+                } label: {
+                    HStack {
+                        LCSettingsIcon(systemName: "apps.iphone", color: .blue)
+                        if sharedModel.multiLCStatus == 0 {
+                            Text("lc.settings.multiLC".loc)
+                        } else if sharedModel.multiLCStatus == 2 {
+                            Text("lc.settings.multiLCIsSecond".loc)
+                        }
+                    }
+                }
+                .disabled(sharedModel.multiLCStatus == 2)
+
+                if(sharedModel.multiLCStatus == 2) {
+                    NavigationLink {
+                        LCJITLessDiagnoseView()
+                    } label: {
+                        HStack {
+                            LCSettingsIcon(systemName: "wrench.and.screwdriver", color: .gray)
+                            Text("lc.settings.jitlessDiagnose".loc)
+                        }
+                    }
+                }
+            } footer: {
+                Text("lc.settings.multiLCDesc".loc)
+            }
+        }
+    }
+
+    @ViewBuilder private var multitaskSection: some View {
+        if #available(iOS 16.1, *) {
+            Section {
+                NavigationLink {
+                    LCMultitaskSettingView()
+                } label: {
+                    HStack {
+                        LCSettingsIcon(systemName: "rectangle.stack", color: .purple)
+                        Text("lc.appBanner.multitask".loc)
+                    }
+                }
+            } footer: {
+                Text("lc.settings.multitaskDesc".loc)
+            }
+        }
     }
 
     func clearNotifications() {

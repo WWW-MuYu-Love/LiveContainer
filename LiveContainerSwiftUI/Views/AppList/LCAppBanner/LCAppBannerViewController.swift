@@ -15,10 +15,21 @@ struct LCAppBannerConfiguration {
 }
 
 
-final class LCAppBannerViewController: UIViewController, UIContextMenuInteractionDelegate, UIDocumentPickerDelegate, UIAdaptivePresentationControllerDelegate {
-        
+final class LCAppBannerViewController: UIViewController, UIGestureRecognizerDelegate, UIDocumentPickerDelegate, UIAdaptivePresentationControllerDelegate {
+
     private let delegate: LCAppBannerDelegate
     private let bannerView = LCAppBannerRootView()
+    // 滑动操作层：容器装横滑按钮（左 VPN、右备份/卸载），
+    // bannerView 盖在上面，横拖时平移露出按钮（用户定版）。
+    private let swipeContainerView = UIView()
+    private let vpnSwipeButton = LCBannerSwipeButton(symbol: "globe", title: "VPN", color: .systemGray)
+    private let backupSwipeButton = LCBannerSwipeButton(symbol: "tray.and.arrow.down.fill", title: "备份", color: .systemBlue)
+    private let uninstallSwipeButton = LCBannerSwipeButton(symbol: "trash.fill", title: "卸载", color: .systemRed)
+    private let rightSwipeStack = UIStackView()
+    private var swipeOffset: CGFloat = 0
+    private var swipeStartOffset: CGFloat = 0
+    private var swipePanGesture: UIPanGestureRecognizer?
+    private var swipeCloseTapGesture: UITapGestureRecognizer?
     private var configuration: LCAppBannerConfiguration
     private var exportTemporaryDirectory: URL?
     // dock 条目变化时重绘画片（卡片状态读 dock 存活态，不订阅
@@ -40,7 +51,37 @@ final class LCAppBannerViewController: UIViewController, UIContextMenuInteractio
     }
 
     override func loadView() {
-        view = bannerView
+        swipeContainerView.backgroundColor = .clear
+        view = swipeContainerView
+
+        vpnSwipeButton.translatesAutoresizingMaskIntoConstraints = false
+        swipeContainerView.addSubview(vpnSwipeButton)
+
+        rightSwipeStack.axis = .horizontal
+        rightSwipeStack.spacing = 4
+        rightSwipeStack.alignment = .center
+        rightSwipeStack.translatesAutoresizingMaskIntoConstraints = false
+        rightSwipeStack.addArrangedSubview(backupSwipeButton)
+        rightSwipeStack.addArrangedSubview(uninstallSwipeButton)
+        swipeContainerView.addSubview(rightSwipeStack)
+
+        bannerView.translatesAutoresizingMaskIntoConstraints = false
+        swipeContainerView.addSubview(bannerView)
+
+        NSLayoutConstraint.activate([
+            vpnSwipeButton.leadingAnchor.constraint(equalTo: swipeContainerView.leadingAnchor, constant: 2),
+            vpnSwipeButton.centerYAnchor.constraint(equalTo: swipeContainerView.centerYAnchor),
+            vpnSwipeButton.widthAnchor.constraint(equalToConstant: 62),
+            vpnSwipeButton.heightAnchor.constraint(equalToConstant: 72),
+
+            rightSwipeStack.trailingAnchor.constraint(equalTo: swipeContainerView.trailingAnchor, constant: -2),
+            rightSwipeStack.centerYAnchor.constraint(equalTo: swipeContainerView.centerYAnchor),
+
+            bannerView.leadingAnchor.constraint(equalTo: swipeContainerView.leadingAnchor),
+            bannerView.trailingAnchor.constraint(equalTo: swipeContainerView.trailingAnchor),
+            bannerView.topAnchor.constraint(equalTo: swipeContainerView.topAnchor),
+            bannerView.bottomAnchor.constraint(equalTo: swipeContainerView.bottomAnchor)
+        ])
     }
 
     override func viewDidLoad() {
@@ -59,7 +100,29 @@ final class LCAppBannerViewController: UIViewController, UIContextMenuInteractio
             bannerView.minimizeControl?.addTarget(self, action: #selector(minimizeButtonTapped), for: .touchUpInside)
             bannerView.smallWindowControl?.addTarget(self, action: #selector(smallWindowButtonTapped), for: .touchUpInside)
         }
-        bannerView.addInteraction(UIContextMenuInteraction(delegate: self))
+        // 长按弹自绘菜单（原系统 UIMenu 标题没法居中、加不了
+        // App 名，换成自绘卡片，样式按用户定的样品图）。
+        let menuLongPress = UILongPressGestureRecognizer(target: self, action: #selector(bannerLongPressed(_:)))
+        menuLongPress.minimumPressDuration = 0.45
+        menuLongPress.delegate = self
+        bannerView.addGestureRecognizer(menuLongPress)
+
+        // 横滑露出操作按钮：左滑备份/卸载、右滑 VPN。
+        let swipePan = UIPanGestureRecognizer(target: self, action: #selector(bannerSwiped(_:)))
+        swipePan.delegate = self
+        bannerView.addGestureRecognizer(swipePan)
+        swipePanGesture = swipePan
+
+        // 滑开后点卡片只收起、不触发卡片上的按钮。
+        let closeTap = UITapGestureRecognizer(target: self, action: #selector(bannerCloseTapped))
+        closeTap.cancelsTouchesInView = true
+        closeTap.isEnabled = false
+        bannerView.addGestureRecognizer(closeTap)
+        swipeCloseTapGesture = closeTap
+
+        vpnSwipeButton.addTarget(self, action: #selector(vpnSwipeTapped), for: .touchUpInside)
+        backupSwipeButton.addTarget(self, action: #selector(backupSwipeTapped), for: .touchUpInside)
+        uninstallSwipeButton.addTarget(self, action: #selector(uninstallSwipeTapped), for: .touchUpInside)
 
         // dock 变化（窗口开关）即重绘画片，卡片状态才跟得上；
         // 订阅即发一次当前值，多一次无害重绘。
@@ -97,6 +160,8 @@ final class LCAppBannerViewController: UIViewController, UIContextMenuInteractio
             dynamicColors: dynamicColors,
             darkModeIcon: darkModeIcon
         )
+        // 模型换了就把横滑收回去，别把上一行的开合状态带过来。
+        setSwipeOffset(0, animated: false)
         refreshView()
     }
 
@@ -108,6 +173,10 @@ final class LCAppBannerViewController: UIViewController, UIContextMenuInteractio
             darkModeIcon: configuration.darkModeIcon,
             traitCollection: traitCollection
         )
+        // 横滑按钮态跟模型走：共享 App 不给卸载；VPN 按钮
+        // 绿=已开、灰=未开。
+        uninstallSwipeButton.isHidden = configuration.model.uiIsShared
+        vpnSwipeButton.setColor(CZFVPNManager.isEnabled(for: configuration.model.appInfo) ? .systemGreen : .systemGray)
     }
 
     @objc private func bannerDoubleTapped(_ gestureRecognizer: UITapGestureRecognizer) {
@@ -454,153 +523,257 @@ final class LCAppBannerViewController: UIViewController, UIContextMenuInteractio
         }
     }
 
-    private func makeContextMenu() -> UIMenu {
-        let model = configuration.model
-        let appInfo = model.appInfo
-        var menuChildren: [UIMenuElement] = []
+    // MARK: - 长按自绘菜单（用户定版）
+    // 删：多任务、用 VPN 打开、卸载；设置置顶，数据文件夹
+    // 改名放第二，之后模块文件夹、添加到主屏幕；头部 App 名
+    // 在上、Bundle ID 居中。容器切换（多容器时）保留，收在
+    // 「容器」子页里。
 
-        // 1. Containers Picker (Equivalent to a Menu with single selection)
-        if model.uiContainers.count > 1 {
-            let containerActions = model.uiContainers.map { [weak self] container in
-                UIAction(
-                    title: container.name,
-                    state: container == model.uiSelectedContainer ? .on : .off
-                ) { _ in
-                    // 只改 uiSelectedContainer 不持久：模型重载时选中会按
-                    // dataUUID 重算回旧容器，等于白选。三个一起改，
-                    // 选了哪个、启动就用哪个、重进还是哪个。
-                    model.uiSelectedContainer = container
-                    model.uiDefaultDataFolder = container.folderName
-                    model.appInfo.dataUUID = container.folderName
-                    self?.refreshView()
-                }
-            }
-            menuChildren.append(UIMenu(title: "Containers", options: .displayInline, children: containerActions))
-        }
-
-        // 2. Main Section
-        var sectionChildren: [UIMenuElement] = []
-        if !model.uiIsShared, model.uiSelectedContainer != nil {
-            sectionChildren.append(UIAction(
-                title: "lc.appBanner.openDataFolder".loc,
-                image: UIImage(systemName: "folder")
-            ) { [weak self] _ in
-                self?.openDataFolder()
-            })
-        }
-
-        // Multitask Toggle
-        if #available(iOS 16.0, *) {
-            let shouldLaunchInMultitaskMode = model.shouldLaunchInMultitaskMode
-            sectionChildren.append(UIAction(
-                title: shouldLaunchInMultitaskMode ? "lc.appBanner.run".loc : "lc.appBanner.multitask".loc,
-                image: UIImage(systemName: shouldLaunchInMultitaskMode ? "play.fill" : "macwindow.badge.plus")
-            ) { [weak self] _ in
-                Task { [weak self] in
-                    await self?.runApp(multitask: !shouldLaunchInMultitaskMode)
-                }
-            })
-        }
-
-        let addToHomeScreenMenu = UIMenu(
-            title: "lc.appBanner.addToHomeScreen".loc,
-            image: UIImage(systemName: "plus.app"),
-            children: [
-                UIAction(title: "lc.appBanner.copyLaunchUrl".loc, image: UIImage(systemName: "link")) { [weak self] _ in
-                    self?.copyLaunchUrl()
-                },
-                UIAction(title: "lc.appBanner.saveAppIcon".loc, image: UIImage(systemName: "square.and.arrow.down")) { [weak self] _ in
-                    Task { [weak self] in
-                        await self?.saveIcon()
-                    }
-                },
-                UIAction(title: "lc.appBanner.createAppClip".loc, image: UIImage(systemName: "appclip")) { [weak self] _ in
-                    Task { [weak self] in
-                        await self?.createAppClip()
-                    }
-                }
-            ]
+    @objc private func bannerLongPressed(_ gesture: UILongPressGestureRecognizer) {
+        guard gesture.state == .began else { return }
+        setSwipeOffset(0, animated: true)
+        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+        let menu = LCAppMenuViewController(
+            appName: configuration.model.displayName,
+            bundleID: configuration.model.bundleIdentifier
         )
-        sectionChildren.append(addToHomeScreenMenu)
-
-        sectionChildren.append(UIAction(
-            title: "lc.tabView.settings".loc,
-            image: UIImage(systemName: "gear")
-        ) { [weak self] _ in
-            self?.openSettings()
-        })
-
-        // 单 App VPN（用户定）：长按直接调用，不用进设置页翻。
-        // 没开过 → 打标记并立刻打开这个 App（插件在启动签名时
-        // 自动部署、核心自动起）；已开 → 摘标记（残留插件下次
-        // 启动时自动清掉，与设置页开关同一套逻辑）
-        let vpnEnabled = CZFVPNManager.isEnabled(for: appInfo)
-        sectionChildren.append(UIAction(
-            title: vpnEnabled ? "关闭 VPN 打开" : "用 VPN 打开",
-            image: UIImage(systemName: "globe")
-        ) { [weak self] _ in
-            if vpnEnabled {
-                CZFVPNManager.setEnabled(false, for: appInfo)
-            } else {
-                CZFVPNManager.setEnabled(true, for: appInfo)
-                Task { [weak self] in
-                    await self?.runApp()
-                }
-            }
-        })
-
-        // Tweak/Module Picker（多选：点一下勾上/再点取消，
-        // 可同时选多个模块文件夹，启动时逐个加载；「无」清空）
-        let selectedFolders = LCAppModel.czfSplitTweakFolders(model.uiTweakFolder)
-        var tweakMenuActions: [UIAction] = [
-            UIAction(
-                title: "lc.common.none".loc,
-                state: selectedFolders.isEmpty ? .on : .off
-            ) { _ in
-                model.uiTweakFolder = nil
-            }
-        ]
-        tweakMenuActions += DataManager.shared.model.tweakFolderNames.map { folderName in
-            UIAction(
-                title: folderName,
-                state: selectedFolders.contains(folderName) ? .on : .off
-            ) { _ in
-                model.toggleTweakFolder(folderName)
-            }
-        }
-        sectionChildren.append(UIMenu(
-            title: "lc.appSettings.tweakFolder".loc,
-            image: UIImage(systemName: "wrench.and.screwdriver"),
-            children: tweakMenuActions
-        ))
-
-        if !model.uiIsShared {
-            sectionChildren.append(UIAction(
-                title: "lc.appBanner.uninstall".loc,
-                image: UIImage(systemName: "trash"),
-                attributes: .destructive
-            ) { [weak self] _ in
-                Task { [weak self] in
-                    await self?.uninstall()
-                }
-            })
-        }
-
-        menuChildren.append(UIMenu(
-            title: appInfo.relativeBundlePath ?? "",
-            options: .displayInline,
-            children: sectionChildren
-        ))
-        return UIMenu(title: "", children: menuChildren)
+        menu.setPage(makeMainMenuRows(menu: menu))
+        present(menu, animated: true)
     }
 
-    func contextMenuInteraction(
-        _ interaction: UIContextMenuInteraction,
-        configurationForMenuAtLocation location: CGPoint
-    ) -> UIContextMenuConfiguration? {
-        UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { [weak self] _ in
-            self?.makeContextMenu()
+    private func makeMainMenuRows(menu: LCAppMenuViewController) -> [LCAppMenuRow] {
+        let model = configuration.model
+        var rows: [LCAppMenuRow] = []
+        rows.append(LCAppMenuRow(title: "lc.tabView.settings".loc, systemImage: "gear") { [weak self, weak menu] in
+            menu?.dismissThen { self?.openSettings() }
+        })
+        if !model.uiIsShared, model.uiSelectedContainer != nil {
+            rows.append(LCAppMenuRow(title: "数据文件夹", systemImage: "folder") { [weak self, weak menu] in
+                menu?.dismissThen { self?.openDataFolder() }
+            })
         }
+        if model.uiContainers.count > 1 {
+            rows.append(LCAppMenuRow(title: "容器", systemImage: "archivebox", accessory: .chevron) { [weak self, weak menu] in
+                guard let self, let menu else { return }
+                menu.setPage(self.makeContainerMenuRows(menu: menu))
+            })
+        }
+        rows.append(LCAppMenuRow(title: "lc.appSettings.tweakFolder".loc, systemImage: "wrench.and.screwdriver", accessory: .chevron) { [weak self, weak menu] in
+            guard let self, let menu else { return }
+            menu.setPage(self.makeTweakMenuRows(menu: menu))
+        })
+        rows.append(LCAppMenuRow(title: "lc.appBanner.addToHomeScreen".loc, systemImage: "plus.app", accessory: .chevron) { [weak self, weak menu] in
+            guard let self, let menu else { return }
+            menu.setPage(self.makeHomeScreenMenuRows(menu: menu))
+        })
+        return rows
+    }
+
+    private func menuBackRow(menu: LCAppMenuViewController) -> LCAppMenuRow {
+        LCAppMenuRow(title: "返回", systemImage: "chevron.left") { [weak self, weak menu] in
+            guard let self, let menu else { return }
+            menu.setPage(self.makeMainMenuRows(menu: menu))
+        }
+    }
+
+    private func makeContainerMenuRows(menu: LCAppMenuViewController) -> [LCAppMenuRow] {
+        let model = configuration.model
+        var rows: [LCAppMenuRow] = [menuBackRow(menu: menu)]
+        for container in model.uiContainers {
+            rows.append(LCAppMenuRow(
+                title: container.name,
+                systemImage: nil,
+                accessory: container == model.uiSelectedContainer ? .checkmark : .none
+            ) { [weak self, weak menu] in
+                // 与原系统菜单同一套：三个一起改，选了哪个、
+                // 启动就用哪个、重进还是哪个。
+                model.uiSelectedContainer = container
+                model.uiDefaultDataFolder = container.folderName
+                model.appInfo.dataUUID = container.folderName
+                menu?.dismissThen { self?.refreshView() }
+            })
+        }
+        return rows
+    }
+
+    private func makeTweakMenuRows(menu: LCAppMenuViewController) -> [LCAppMenuRow] {
+        let model = configuration.model
+        let selectedFolders = LCAppModel.czfSplitTweakFolders(model.uiTweakFolder)
+        var rows: [LCAppMenuRow] = [menuBackRow(menu: menu)]
+        rows.append(LCAppMenuRow(
+            title: "lc.common.none".loc,
+            systemImage: nil,
+            accessory: selectedFolders.isEmpty ? .checkmark : .none
+        ) { [weak self, weak menu] in
+            guard let self, let menu else { return }
+            model.uiTweakFolder = nil
+            menu.setPage(self.makeTweakMenuRows(menu: menu))
+        })
+        for folderName in DataManager.shared.model.tweakFolderNames {
+            rows.append(LCAppMenuRow(
+                title: folderName,
+                systemImage: nil,
+                accessory: selectedFolders.contains(folderName) ? .checkmark : .none
+            ) { [weak self, weak menu] in
+                guard let self, let menu else { return }
+                model.toggleTweakFolder(folderName)
+                menu.setPage(self.makeTweakMenuRows(menu: menu))
+            })
+        }
+        return rows
+    }
+
+    private func makeHomeScreenMenuRows(menu: LCAppMenuViewController) -> [LCAppMenuRow] {
+        [
+            menuBackRow(menu: menu),
+            LCAppMenuRow(title: "lc.appBanner.copyLaunchUrl".loc, systemImage: "link") { [weak self, weak menu] in
+                menu?.dismissThen { self?.copyLaunchUrl() }
+            },
+            LCAppMenuRow(title: "lc.appBanner.saveAppIcon".loc, systemImage: "square.and.arrow.down") { [weak self, weak menu] in
+                menu?.dismissThen {
+                    Task { [weak self] in await self?.saveIcon() }
+                }
+            },
+            LCAppMenuRow(title: "lc.appBanner.createAppClip".loc, systemImage: "appclip") { [weak self, weak menu] in
+                menu?.dismissThen {
+                    Task { [weak self] in await self?.createAppClip() }
+                }
+            }
+        ]
+    }
+
+    // MARK: - 横滑操作（左滑备份/卸载、右滑 VPN）
+
+    private var leftSwipeWidth: CGFloat { 70 }
+    private var rightSwipeWidth: CGFloat {
+        // 按钮宽 62、间距 4、右侧留 2，与 loadView 布局一致。
+        let count = uninstallSwipeButton.isHidden ? 1 : 2
+        return CGFloat(62 * count + 4 * (count - 1) + 6)
+    }
+
+    private func setSwipeOffset(_ offset: CGFloat, animated: Bool) {
+        swipeOffset = offset
+        swipeCloseTapGesture?.isEnabled = offset != 0
+        let apply = { self.bannerView.transform = CGAffineTransform(translationX: offset, y: 0) }
+        if animated {
+            UIView.animate(withDuration: 0.25, delay: 0, options: [.curveEaseOut], animations: apply)
+        } else {
+            apply()
+        }
+    }
+
+    @objc private func bannerSwiped(_ gesture: UIPanGestureRecognizer) {
+        switch gesture.state {
+        case .began:
+            swipeStartOffset = swipeOffset
+        case .changed:
+            let raw = swipeStartOffset + gesture.translation(in: swipeContainerView).x
+            let clamped = min(max(raw, -rightSwipeWidth), leftSwipeWidth)
+            swipeOffset = clamped
+            bannerView.transform = CGAffineTransform(translationX: clamped, y: 0)
+        case .ended, .cancelled:
+            let total = swipeStartOffset + gesture.translation(in: swipeContainerView).x
+            let velocity = gesture.velocity(in: swipeContainerView).x
+            var target: CGFloat = 0
+            if total <= -rightSwipeWidth * 0.4 || (total < -12 && velocity < -600) {
+                target = -rightSwipeWidth
+            } else if total >= leftSwipeWidth * 0.4 || (total > 12 && velocity > 600) {
+                target = leftSwipeWidth
+            }
+            setSwipeOffset(target, animated: true)
+        default:
+            break
+        }
+    }
+
+    @objc private func bannerCloseTapped() {
+        setSwipeOffset(0, animated: true)
+    }
+
+    @objc private func vpnSwipeTapped() {
+        let appInfo = configuration.model.appInfo
+        setSwipeOffset(0, animated: true)
+        // 与原长按菜单的「用 VPN 打开」同一套：已开 → 关掉；
+        // 未开 → 开并立刻打开这个 App。
+        if CZFVPNManager.isEnabled(for: appInfo) {
+            CZFVPNManager.setEnabled(false, for: appInfo)
+            refreshView()
+        } else {
+            CZFVPNManager.setEnabled(true, for: appInfo)
+            refreshView()
+            Task { [weak self] in await self?.runApp() }
+        }
+    }
+
+    @objc private func uninstallSwipeTapped() {
+        setSwipeOffset(0, animated: true)
+        Task { [weak self] in await self?.uninstall() }
+    }
+
+    @objc private func backupSwipeTapped() {
+        setSwipeOffset(0, animated: true)
+        backupApp()
+    }
+
+    // 与数据管理里的手动备份同一套、同一位置（Documents/
+    // Backups + 同步外部备份文件夹 + 刷新设置备份），所以
+    // 重装这个 App 时自动恢复也能查到这份备份。
+    private func backupApp() {
+        let app = configuration.model
+        let name = app.displayName
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let fm = FileManager.default
+            let message: String
+            if let docs = fm.urls(for: .documentDirectory, in: .userDomainMask).first {
+                let root = docs.appendingPathComponent("Backups")
+                do {
+                    try fm.createDirectory(at: root, withIntermediateDirectories: true)
+                    let one = try LCDataManagementView.backupOneAppSync(app, backupRoot: root, fm: fm)
+                    LCDataManagementView.syncBackupsToExternalFolder(appNames: [one.folderName], backupRoot: root)
+                    _ = LCDataManagementView.writeCZFSettingsBackup()
+                    message = "「\(name)」已备份：容器 \(one.containerCount) 个 · 钥匙串 \(one.keychainCount) 条"
+                } catch {
+                    message = "「\(name)」备份失败：\(LCUtils.czfFriendlyError(error))"
+                }
+            } else {
+                message = "「\(name)」备份失败：找不到文档目录"
+            }
+            DispatchQueue.main.async {
+                self?.showInfo(message)
+            }
+        }
+    }
+
+    private func showInfo(_ message: String) {
+        guard viewIfLoaded?.window != nil, presentedViewController == nil else { return }
+        let alert = UIAlertController(title: nil, message: message, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "lc.common.ok".loc, style: .default))
+        present(alert, animated: true)
+    }
+
+    // MARK: - 手势代理
+
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+        // 长按菜单不落在启动/最小化/小窗口上：那仨是按钮、
+        // 各有自己的点按和长按（启动的长按是调面板）。
+        if gestureRecognizer is UILongPressGestureRecognizer {
+            let location = touch.location(in: bannerView)
+            if bannerView.runControl.frame.contains(location)
+                || (bannerView.minimizeControl?.frame.contains(location) ?? false)
+                || (bannerView.smallWindowControl?.frame.contains(location) ?? false) {
+                return false
+            }
+        }
+        return true
+    }
+
+    func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+        // 横滑只认横向速度占优的拖动，纵向拖动留给列表滚动。
+        if let pan = gestureRecognizer as? UIPanGestureRecognizer {
+            let velocity = pan.velocity(in: bannerView)
+            return abs(velocity.x) > abs(velocity.y) * 1.2
+        }
+        return true
     }
 
     private func openSettings() {
@@ -772,5 +945,294 @@ final class LCAppBannerViewController: UIViewController, UIContextMenuInteractio
         }
         try? FileManager.default.removeItem(at: exportTemporaryDirectory)
         self.exportTemporaryDirectory = nil
+    }
+}
+
+
+// MARK: - 长按自绘菜单的数据与视图
+
+struct LCAppMenuRow {
+    enum Accessory {
+        case none
+        case chevron
+        case checkmark
+    }
+
+    let title: String
+    let systemImage: String?
+    let accessory: Accessory
+    let action: () -> Void
+
+    init(title: String, systemImage: String?, accessory: Accessory = .none, action: @escaping () -> Void) {
+        self.title = title
+        self.systemImage = systemImage
+        self.accessory = accessory
+        self.action = action
+    }
+}
+
+final class LCAppMenuViewController: UIViewController {
+    private let appName: String
+    private let bundleID: String
+    private let cardView = UIView()
+    private let rowsStack = UIStackView()
+
+    init(appName: String, bundleID: String) {
+        self.appName = appName
+        self.bundleID = bundleID
+        super.init(nibName: nil, bundle: nil)
+        modalPresentationStyle = .overFullScreen
+        modalTransitionStyle = .crossDissolve
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        view.backgroundColor = UIColor.black.withAlphaComponent(0.28)
+
+        let dismissTap = UITapGestureRecognizer(target: self, action: #selector(backgroundTapped(_:)))
+        view.addGestureRecognizer(dismissTap)
+
+        cardView.backgroundColor = .secondarySystemBackground
+        cardView.layer.cornerRadius = 24
+        cardView.layer.cornerCurve = .continuous
+        cardView.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(cardView)
+
+        // 头部：App 名在最上面、Bundle ID 居中（用户定版）。
+        let nameLabel = UILabel()
+        nameLabel.text = appName
+        nameLabel.font = .systemFont(ofSize: 17, weight: .bold)
+        nameLabel.textAlignment = .center
+        nameLabel.numberOfLines = 1
+        nameLabel.adjustsFontSizeToFitWidth = true
+        nameLabel.minimumScaleFactor = 0.7
+
+        let idLabel = UILabel()
+        idLabel.text = bundleID
+        idLabel.font = .systemFont(ofSize: 12)
+        idLabel.textColor = .secondaryLabel
+        idLabel.textAlignment = .center
+        idLabel.numberOfLines = 1
+        idLabel.adjustsFontSizeToFitWidth = true
+        idLabel.minimumScaleFactor = 0.7
+
+        let headerStack = UIStackView(arrangedSubviews: [nameLabel, idLabel])
+        headerStack.axis = .vertical
+        headerStack.spacing = 3
+        headerStack.translatesAutoresizingMaskIntoConstraints = false
+        cardView.addSubview(headerStack)
+
+        let separator = UIView()
+        separator.backgroundColor = UIColor.separator.withAlphaComponent(0.6)
+        separator.translatesAutoresizingMaskIntoConstraints = false
+        cardView.addSubview(separator)
+
+        rowsStack.axis = .vertical
+        rowsStack.translatesAutoresizingMaskIntoConstraints = false
+        cardView.addSubview(rowsStack)
+
+        NSLayoutConstraint.activate([
+            cardView.centerYAnchor.constraint(equalTo: view.centerYAnchor),
+            cardView.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 28),
+            cardView.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -28),
+
+            headerStack.topAnchor.constraint(equalTo: cardView.topAnchor, constant: 16),
+            headerStack.leadingAnchor.constraint(equalTo: cardView.leadingAnchor, constant: 20),
+            headerStack.trailingAnchor.constraint(equalTo: cardView.trailingAnchor, constant: -20),
+
+            separator.topAnchor.constraint(equalTo: headerStack.bottomAnchor, constant: 13),
+            separator.leadingAnchor.constraint(equalTo: cardView.leadingAnchor, constant: 20),
+            separator.trailingAnchor.constraint(equalTo: cardView.trailingAnchor, constant: -20),
+            separator.heightAnchor.constraint(equalToConstant: 0.5),
+
+            rowsStack.topAnchor.constraint(equalTo: separator.bottomAnchor, constant: 6),
+            rowsStack.leadingAnchor.constraint(equalTo: cardView.leadingAnchor),
+            rowsStack.trailingAnchor.constraint(equalTo: cardView.trailingAnchor),
+            rowsStack.bottomAnchor.constraint(equalTo: cardView.bottomAnchor, constant: -8)
+        ])
+    }
+
+    @objc private func backgroundTapped(_ gesture: UITapGestureRecognizer) {
+        if !cardView.frame.contains(gesture.location(in: view)) {
+            dismiss(animated: true)
+        }
+    }
+
+    func setPage(_ rows: [LCAppMenuRow]) {
+        loadViewIfNeeded()
+        for subview in rowsStack.arrangedSubviews {
+            rowsStack.removeArrangedSubview(subview)
+            subview.removeFromSuperview()
+        }
+        for (index, row) in rows.enumerated() {
+            rowsStack.addArrangedSubview(LCAppMenuRowControl(row: row))
+            if index < rows.count - 1 {
+                rowsStack.addArrangedSubview(makeSeparator())
+            }
+        }
+    }
+
+    private func makeSeparator() -> UIView {
+        let container = UIView()
+        let line = UIView()
+        line.backgroundColor = UIColor.separator.withAlphaComponent(0.45)
+        line.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(line)
+        NSLayoutConstraint.activate([
+            line.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 54),
+            line.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -20),
+            line.topAnchor.constraint(equalTo: container.topAnchor),
+            line.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+            line.heightAnchor.constraint(equalToConstant: 0.5)
+        ])
+        return container
+    }
+
+    func dismissThen(_ action: @escaping () -> Void) {
+        dismiss(animated: true, completion: action)
+    }
+}
+
+private final class LCAppMenuRowControl: UIControl {
+    private let row: LCAppMenuRow
+
+    init(row: LCAppMenuRow) {
+        self.row = row
+        super.init(frame: .zero)
+        translatesAutoresizingMaskIntoConstraints = false
+        heightAnchor.constraint(equalToConstant: 50).isActive = true
+
+        let iconView = UIImageView()
+        iconView.translatesAutoresizingMaskIntoConstraints = false
+        if let systemImage = row.systemImage {
+            iconView.image = UIImage(systemName: systemImage, withConfiguration: UIImage.SymbolConfiguration(pointSize: 17))
+        }
+        iconView.tintColor = .label
+        iconView.contentMode = .center
+        addSubview(iconView)
+
+        let titleLabel = UILabel()
+        titleLabel.translatesAutoresizingMaskIntoConstraints = false
+        titleLabel.text = row.title
+        titleLabel.font = .systemFont(ofSize: 16)
+        titleLabel.textColor = .label
+        titleLabel.numberOfLines = 1
+        titleLabel.lineBreakMode = .byTruncatingTail
+        addSubview(titleLabel)
+
+        NSLayoutConstraint.activate([
+            iconView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
+            iconView.centerYAnchor.constraint(equalTo: centerYAnchor),
+            iconView.widthAnchor.constraint(equalToConstant: 26),
+            iconView.heightAnchor.constraint(equalToConstant: 26),
+            titleLabel.leadingAnchor.constraint(equalTo: iconView.trailingAnchor, constant: 12),
+            titleLabel.centerYAnchor.constraint(equalTo: centerYAnchor)
+        ])
+
+        switch row.accessory {
+        case .none:
+            titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -16).isActive = true
+        case .chevron, .checkmark:
+            let accessoryView = UIImageView()
+            accessoryView.translatesAutoresizingMaskIntoConstraints = false
+            if row.accessory == .chevron {
+                accessoryView.image = UIImage(systemName: "chevron.right", withConfiguration: UIImage.SymbolConfiguration(pointSize: 12, weight: .semibold))
+                accessoryView.tintColor = .tertiaryLabel
+            } else {
+                accessoryView.image = UIImage(systemName: "checkmark", withConfiguration: UIImage.SymbolConfiguration(pointSize: 14, weight: .semibold))
+                accessoryView.tintColor = .systemBlue
+            }
+            accessoryView.contentMode = .center
+            addSubview(accessoryView)
+            NSLayoutConstraint.activate([
+                accessoryView.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -18),
+                accessoryView.centerYAnchor.constraint(equalTo: centerYAnchor),
+                titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: accessoryView.leadingAnchor, constant: -10)
+            ])
+        }
+
+        addTarget(self, action: #selector(tapped), for: .touchUpInside)
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override var isHighlighted: Bool {
+        didSet {
+            backgroundColor = isHighlighted ? UIColor.label.withAlphaComponent(0.06) : .clear
+        }
+    }
+
+    @objc private func tapped() {
+        row.action()
+    }
+}
+
+// MARK: - 横滑圆形按钮（圆图标 + 下方小字，与项目页滑动按钮同款式）
+
+final class LCBannerSwipeButton: UIControl {
+    private let circleView = UIView()
+    private let iconView = UIImageView()
+    private let titleLabel = UILabel()
+
+    override var intrinsicContentSize: CGSize {
+        CGSize(width: 62, height: 72)
+    }
+
+    init(symbol: String, title: String, color: UIColor) {
+        super.init(frame: .zero)
+
+        circleView.isUserInteractionEnabled = false
+        circleView.backgroundColor = color
+        circleView.layer.cornerRadius = 24
+        circleView.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(circleView)
+
+        iconView.isUserInteractionEnabled = false
+        iconView.image = UIImage(systemName: symbol, withConfiguration: UIImage.SymbolConfiguration(pointSize: 19, weight: .semibold))
+        iconView.tintColor = .white
+        iconView.contentMode = .center
+        iconView.translatesAutoresizingMaskIntoConstraints = false
+        circleView.addSubview(iconView)
+
+        titleLabel.isUserInteractionEnabled = false
+        titleLabel.text = title
+        titleLabel.font = .systemFont(ofSize: 11)
+        titleLabel.textColor = .secondaryLabel
+        titleLabel.textAlignment = .center
+        titleLabel.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(titleLabel)
+
+        NSLayoutConstraint.activate([
+            circleView.topAnchor.constraint(equalTo: topAnchor, constant: 2),
+            circleView.centerXAnchor.constraint(equalTo: centerXAnchor),
+            circleView.widthAnchor.constraint(equalToConstant: 48),
+            circleView.heightAnchor.constraint(equalToConstant: 48),
+            iconView.leadingAnchor.constraint(equalTo: circleView.leadingAnchor),
+            iconView.trailingAnchor.constraint(equalTo: circleView.trailingAnchor),
+            iconView.topAnchor.constraint(equalTo: circleView.topAnchor),
+            iconView.bottomAnchor.constraint(equalTo: circleView.bottomAnchor),
+            titleLabel.topAnchor.constraint(equalTo: circleView.bottomAnchor, constant: 3),
+            titleLabel.centerXAnchor.constraint(equalTo: centerXAnchor)
+        ])
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    func setColor(_ color: UIColor) {
+        circleView.backgroundColor = color
+    }
+
+    override var isHighlighted: Bool {
+        didSet {
+            circleView.alpha = isHighlighted ? 0.72 : 1
+        }
     }
 }

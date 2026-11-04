@@ -14,6 +14,10 @@ struct LCUpdateView: View {
     @State var errorShow = false
     @State var errorInfo = ""
 
+    private var currentAppVersion: String {
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "未知"
+    }
+
     // App 内更新检查（CZF，2026-10-29）：查 fork 自己的 update release
     // release，对比本机 LCVersionInfo 里的短提交号；有新版不
     // 自己下载安装（侧载 App 换不了自己的包），而是跳
@@ -116,10 +120,9 @@ struct LCUpdateView: View {
                         Text("去 Seal 更新")
                     }
                 }
-                Text("点更新会跳到 SideInstaller 🅥 下载安装，安装时会关闭 LiveContainer，装好后重新打开；更新前建议先在数据管理里备份一次。")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
             }
+            } footer: {
+                Text("当前版本 \(currentAppVersion)")
             }
         }
         .navigationTitle("更新")
