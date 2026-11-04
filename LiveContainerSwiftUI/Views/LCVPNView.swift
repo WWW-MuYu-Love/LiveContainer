@@ -996,9 +996,9 @@ private struct CZFVPNNodeLabel: View {
             name = String(name.dropFirst(flag.count)).trimmingCharacters(in: .whitespaces)
         }
         if name.isEmpty { name = display.name }
-        var protocol = CZFVPNManager.nodeProtocolLine(for: link)
+        var protoLine = CZFVPNManager.nodeProtocolLine(for: link)
         if CZFSingBoxRouting.showsInsecureMark(for: link) {
-            protocol += " · 不验证书"
+            protoLine += " · 不验证书"
         }
         return HStack(spacing: 10) {
             // 在用标记：小火箭式橙点（不在用时留空占位，行不位移）
@@ -1012,7 +1012,7 @@ private struct CZFVPNNodeLabel: View {
                     .font(.system(size: 16, weight: .semibold))
                     .foregroundStyle(.primary)
                     .lineLimit(1)
-                Text(protocol)
+                Text(protoLine)
                     .font(.system(size: 11.5))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
