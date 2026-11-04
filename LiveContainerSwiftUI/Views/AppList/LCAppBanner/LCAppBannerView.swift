@@ -27,6 +27,10 @@ final class LCAppBannerRootView: UIView {
     private let jitBadge = LCAppBannerBadgeView(symbolName: "bolt.fill")
     private let lockBadge = LCAppBannerBadgeView(symbolName: "lock.fill")
     private let bit32Badge = LCAppBannerBadgeView(text: "32")
+    // VPN 开启角标：和横滑 VPN 钮同图标（globe），开了
+    // 才显示，绿色与开关的开启态呼应（用户在演示图里
+    // 点名要的：开 VPN 后名字旁边要有标志）
+    private let vpnBadge = LCAppBannerBadgeView(symbolName: "globe")
     private let nameSpacer = UIView()
     private let nameStack = UIStackView()
     private let detailStack = UIStackView()
@@ -79,6 +83,7 @@ final class LCAppBannerRootView: UIView {
         nameStack.alignment = .center
         nameStack.spacing = 8
         nameStack.addArrangedSubview(nameLabel)
+        nameStack.addArrangedSubview(vpnBadge)
         nameStack.addArrangedSubview(sharedBadge)
         nameStack.addArrangedSubview(jitBadge)
         nameStack.addArrangedSubview(bit32Badge)
@@ -210,6 +215,8 @@ final class LCAppBannerRootView: UIView {
 
         // 角标统一中性灰（原来橙/紫/蓝糖果色太花，跟面板胶囊同一思路，
         // 只留文字区分）；是否显示的逻辑不动
+        vpnBadge.isHidden = !CZFVPNManager.isEnabled(for: appInfo)
+        vpnBadge.backgroundColor = .systemGreen
         sharedBadge.isHidden = !model.uiIsShared
         sharedBadge.backgroundColor = .systemGray
         jitBadge.isHidden = !model.uiIsJITNeeded || model.uiIs32bit

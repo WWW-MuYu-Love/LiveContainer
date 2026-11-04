@@ -570,10 +570,13 @@ struct LCSourcesView: View {
                     .padding()
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
                 } else {
-                    // 列表而非滚动视图：源头的左右滑（右滑刷
-                    // 新、左滑删除）只能挂在 List 行上，与节
-                    // 点页同款。每行就是一整个源段（头卡 +
-                    // 展开的应用行），滑动整段跟着走。
+                    // 分组列表（与节点页同款）：一个源 = 一
+                    // 个 Section = 一张卡，源头是卡的第一行，
+                    // 展开的应用是同一卡里的后续行——不再整
+                    // 段塞进一行（旧法收起时内容瞬间消失、行
+                    // 高再跳一下，动画是坏的；分行后插入/删
+                    // 除动画才顺）。源头的左右滑挂在头行上：
+                    // 右滑刷新、左滑删除。
                     List {
                         ForEach(viewModel.sources, id: \.id) { item in
                                 let apps = filteredApps(for: item)
@@ -599,27 +602,6 @@ struct LCSourcesView: View {
                                         }
                                     }
                                 )
-                                .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
-                                .listRowSeparator(.hidden)
-                                // 右滑到底直接刷新这个源
-                                .swipeActions(edge: .leading, allowsFullSwipe: true) {
-                                    Button {
-                                        Task { await viewModel.refreshSource(item) }
-                                    } label: {
-                                        Label("lc.sources.refresh".loc, systemImage: "arrow.clockwise")
-                                    }
-                                    .tint(.blue)
-                                }
-                                // 左滑弹出删除按钮，点按走原有
-                                // 的删除确认弹窗
-                                .swipeActions(edge: .trailing) {
-                                    Button(role: .destructive) {
-                                        sourcePendingRemoval = item
-                                    } label: {
-                                        Label("lc.sources.removeSource".loc, systemImage: "trash")
-                                    }
-                                }
-                                .animation(.easeInOut, value: apps.count)
                         }
 
                         if totalFilteredAppCount == 0 {
@@ -631,9 +613,9 @@ struct LCSourcesView: View {
                             .frame(maxWidth: .infinity)
                             .frame(minHeight: 160, alignment: .center)
                             .listRowSeparator(.hidden)
+                            .listRowBackground(Color.clear)
                         }
                     }
-                    .listStyle(.plain)
                 }
             }
             .navigationTitle("lc.tabView.sources".loc)
@@ -1174,32 +1156,47 @@ private struct AltStoreSourceSectionView: View {
     @State private var showAllApps = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            // 源头改按钮卡（同节点组头）：整卡即按钮，点按
-            // 展开/收起，长按直接复制源地址（带成功震动）；
-            // 原「···」菜单删除——刷新走行右滑、删除走行
-            // 左滑，都在主页列表行上。加载中右侧转圈保留。
+        // 一源一段一卡（照小火箭/节点组）：源头是段卡的
+        // 第一行——箭头 + 图标 + 名称一列、副标题紧贴名
+        // 称下方同在卡内；展开的应用是同卡后续行紧贴其
+        // 下，段卡即边框，不套第二层卡、不留多余间隙。
+        // 分行后展开/收起走 List 的行插入/删除动画（旧
+        // 的整段一行：内容瞬间消失、行高再跳，动画坏）。
+        // 左右滑挂头行：右滑到底刷新、左滑删除走确认。
+        Section {
             HStack(alignment: .center, spacing: 10) {
-                Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                Image(systemName: isExpanded || isFiltering ? "chevron.down" : "chevron.right")
+                    .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(.secondary)
                 SourceIconView(url: item.primaryIconURL)
-                    .frame(width: 36, height: 36)
+                    .frame(width: 32, height: 32)
                     .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                Text(item.source?.name ?? item.displayName)
-                    .font(.system(.title2).bold())
-                    .lineLimit(1)
+                VStack(alignment: .leading, spacing: 2) {
+                    // 名称字号调小：title2 粗体（约 22）→ 17 半粗
+                    Text(item.source?.name ?? item.displayName)
+                        .font(.system(size: 17, weight: .semibold))
+                        .lineLimit(1)
+                    // 副标题收进卡里：名称正下方一行小字，
+                    // 不再飘在卡片外面的白底上
+                    if let subtitle = item.source?.subtitle, !subtitle.isEmpty {
+                        Text(subtitle)
+                            .font(.system(size: 12))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    } else if item.source == nil, let host = item.url.host {
+                        Text(host)
+                            .font(.system(size: 12))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                }
                 Spacer()
                 if item.isLoading {
                     ProgressView()
                 }
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 10)
-            .background(
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .fill(Color(UIColor.secondarySystemBackground))
-            )
-            .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .listRowInsets(EdgeInsets(top: 10, leading: 16, bottom: 10, trailing: 16))
+            .contentShape(Rectangle())
             .onTapGesture {
                 toggleExpanded()
             }
@@ -1207,17 +1204,24 @@ private struct AltStoreSourceSectionView: View {
                 UIPasteboard.general.string = item.url.absoluteString
                 UINotificationFeedbackGenerator().notificationOccurred(.success)
             }
-            
-            if let subtitle = item.source?.subtitle, !subtitle.isEmpty {
-                Text(subtitle)
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-            } else if item.source == nil, let host = item.url.host {
-                Text(host)
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
+            // 右滑到底直接刷新这个源
+            .swipeActions(edge: .leading, allowsFullSwipe: true) {
+                Button {
+                    onRefresh()
+                } label: {
+                    Label("lc.sources.refresh".loc, systemImage: "arrow.clockwise")
+                }
+                .tint(.blue)
             }
-            
+            // 左滑弹出删除按钮，点按走原有的删除确认弹窗
+            .swipeActions(edge: .trailing) {
+                Button(role: .destructive) {
+                    onRemove()
+                } label: {
+                    Label("lc.sources.removeSource".loc, systemImage: "trash")
+                }
+            }
+
             if let error = item.error {
                 VStack(alignment: .leading, spacing: 6) {
                     Text("lc.sources.section.error".loc)
@@ -1229,38 +1233,34 @@ private struct AltStoreSourceSectionView: View {
                     Button("lc.sources.refresh".loc, action: onRefresh)
                         .font(.footnote)
                 }
-                .padding()
-                .background(
-                    RoundedRectangle(cornerRadius: 18)
-                        .fill(Color(uiColor: UIColor.secondarySystemBackground))
-                )
+                .listRowInsets(EdgeInsets(top: 10, leading: 16, bottom: 10, trailing: 16))
             } else if let source = item.source, isExpanded || isFiltering {
-                VStack(spacing: 12) {
-                    ForEach(filteredApps[0..<(showAllApps ? filteredApps.count : min(50, filteredApps.count))]) { app in
-                        LCSourceAppBanner(app: app, source: source, installAction: onInstall, installAsNewAction: onInstallAsNew, downloadAction: onDownload, isBatchMode: isBatchMode, isSelected: selectedIDs.contains(app.bundleIdentifier), onToggleSelect: { onToggleSelect(app) })
+                ForEach(filteredApps[0..<(showAllApps ? filteredApps.count : min(50, filteredApps.count))]) { app in
+                    LCSourceAppBanner(app: app, source: source, installAction: onInstall, installAsNewAction: onInstallAsNew, downloadAction: onDownload, isBatchMode: isBatchMode, isSelected: selectedIDs.contains(app.bundleIdentifier), onToggleSelect: { onToggleSelect(app) })
+                        .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
+                }
+                if filteredApps.isEmpty {
+                    if source.apps.isEmpty || isFiltering {
+                        Text("lc.sources.section.noApps".loc)
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                            .listRowInsets(EdgeInsets(top: 10, leading: 16, bottom: 10, trailing: 16))
                     }
-                    if filteredApps.isEmpty {
-                        if source.apps.isEmpty || isFiltering {
-                            Text("lc.sources.section.noApps".loc)
-                                .font(.footnote)
-                                .foregroundStyle(.secondary)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                    } else if filteredApps.count > 50 && !showAllApps {
+                } else if filteredApps.count > 50 && !showAllApps {
+                    VStack(alignment: .leading, spacing: 6) {
                         Text("lc.sources.section.tooManyApps".loc)
                             .font(.footnote)
                             .foregroundStyle(.secondary)
-                            .frame(maxWidth: .infinity, alignment: .leading)
                         Button("展开全部（共 \(filteredApps.count) 个）") {
                             showAllApps = true
                         }
                         .font(.footnote)
-                        .frame(maxWidth: .infinity, alignment: .leading)
                     }
+                    .listRowInsets(EdgeInsets(top: 10, leading: 16, bottom: 10, trailing: 16))
                 }
             } else if item.isLoading {
                 ProgressView("lc.sources.loading".loc)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .listRowInsets(EdgeInsets(top: 10, leading: 16, bottom: 10, trailing: 16))
             }
         }
     }
@@ -1333,16 +1333,6 @@ private struct LCSourceAppBanner: View {
         return app.tintColor ?? source.tintColor ?? Color("FontColor")
     }
     
-    private var textColor: Color {
-        _ = colorScheme == .dark // trigger refresh
-        let color = dynamicColors ? primaryColor : Color("FontColor")
-        return color.readableTextColor()
-    }
-    
-    private var backgroundColor: Color {
-        dynamicColors ? primaryColor.opacity(0.5) : Color("AppBannerBG")
-    }
-    
     private var metadataText: String {
         guard let latest = app.latestVersion else {
             return app.bundleIdentifier
@@ -1388,12 +1378,12 @@ private struct LCSourceAppBanner: View {
                     // 尽量显示完整而不是早早截断。
                     Text(metadataText)
                         .font(.system(size: 11))
-                        .foregroundColor(textColor)
+                        .foregroundColor(.secondary)
                         .lineLimit(2)
                     if !subtitleText.isEmpty {
                         Text(subtitleText)
                             .font(.system(size: 10))
-                            .foregroundColor(textColor)
+                            .foregroundColor(.secondary)
                             .lineLimit(2)
                     }
                 }
@@ -1408,7 +1398,7 @@ private struct LCSourceAppBanner: View {
                 } label: {
                     Image(systemName: copiedCardURL ? "checkmark" : "doc.on.doc")
                         .font(.subheadline.weight(.semibold))
-                        .foregroundColor(textColor)
+                        .foregroundColor(.secondary)
                         .frame(width: 32, height: 32)
                 }
                 .buttonStyle(BasicButtonStyle())
@@ -1429,16 +1419,14 @@ private struct LCSourceAppBanner: View {
                 // 其他入口不受影响）
                 let isDylib = (app.latestVersion?.downloadURL.pathExtension.lowercased() == "dylib")
                 if isDylib && isPluginInstalled {
+                    // 状态/动作钮统一与应用页启动钮同尺寸：
+                    // 高 30、字 14 粗（用户定）
                     Text("lc.common.installed".loc)
-                        .bold()
+                        .font(.system(size: 14, weight: .bold))
                         .foregroundColor(.white)
                         .lineLimit(1)
-                        .frame(height: 32)
-                        .minimumScaleFactor(0.1)
-                        .padding()
-                        .frame(idealWidth: 70)
-                        .frame(height: 32)
-                        .fixedSize()
+                        .padding(.horizontal, 16)
+                        .frame(height: 30)
                         .background(Capsule().fill(Color.green))
                         .clipShape(Capsule())
                 } else if !isDylib && isInstalled && hasUpdate {
@@ -1447,17 +1435,14 @@ private struct LCSourceAppBanner: View {
                             installAction(app)
                         } label: {
                             Text("更新")
-                                .bold()
+                                .font(.system(size: 14, weight: .bold))
                                 .foregroundColor(.white)
                                 .lineLimit(1)
-                                .frame(height: 32)
-                                .minimumScaleFactor(0.1)
+                                .frame(height: 30)
                         }
                         .buttonStyle(BasicButtonStyle())
-                        .padding()
-                        .frame(idealWidth: 70)
-                        .frame(height: 32)
-                        .fixedSize()
+                        .padding(.horizontal, 16)
+                        .frame(height: 30)
                         .background(
                             Capsule().fill(Color.orange)
                         )
@@ -1466,15 +1451,14 @@ private struct LCSourceAppBanner: View {
                             installAsNewAction(app)
                         } label: {
                             Text("新建")
-                                .bold()
+                                .font(.system(size: 14, weight: .bold))
                                 .foregroundColor(.white)
                                 .lineLimit(1)
-                                .frame(height: 32)
-                                .minimumScaleFactor(0.1)
+                                .frame(height: 30)
                         }
                         .buttonStyle(BasicButtonStyle())
-                        .padding(.horizontal, 10)
-                        .frame(height: 32)
+                        .padding(.horizontal, 12)
+                        .frame(height: 30)
                         .background(Capsule().fill(Color.purple))
                         .clipShape(Capsule())
                     }
@@ -1489,17 +1473,14 @@ private struct LCSourceAppBanner: View {
                             }
                         } label: {
                             Text("lc.common.open".loc)
-                                .bold()
+                                .font(.system(size: 14, weight: .bold))
                                 .foregroundColor(.white)
                                 .lineLimit(1)
-                                .frame(height: 32)
-                                .minimumScaleFactor(0.1)
+                                .frame(height: 30)
                         }
                         .buttonStyle(BasicButtonStyle())
-                        .padding()
-                        .frame(idealWidth: 70)
-                        .frame(height: 32)
-                        .fixedSize()
+                        .padding(.horizontal, 16)
+                        .frame(height: 30)
                         .background(
                             Capsule().fill(Color.green)
                         )
@@ -1508,15 +1489,14 @@ private struct LCSourceAppBanner: View {
                             installAsNewAction(app)
                         } label: {
                             Text("新建")
-                                .bold()
+                                .font(.system(size: 14, weight: .bold))
                                 .foregroundColor(.white)
                                 .lineLimit(1)
-                                .frame(height: 32)
-                                .minimumScaleFactor(0.1)
+                                .frame(height: 30)
                         }
                         .buttonStyle(BasicButtonStyle())
-                        .padding(.horizontal, 10)
-                        .frame(height: 32)
+                        .padding(.horizontal, 12)
+                        .frame(height: 30)
                         .background(Capsule().fill(Color.purple))
                         .clipShape(Capsule())
                     }
@@ -1525,17 +1505,14 @@ private struct LCSourceAppBanner: View {
                         installAction(app)
                     } label: {
                         Text("lc.common.install".loc)
-                            .bold()
+                            .font(.system(size: 14, weight: .bold))
                             .foregroundColor(.white)
                             .lineLimit(1)
-                            .frame(height: 32)
-                            .minimumScaleFactor(0.1)
+                            .frame(height: 30)
                     }
                     .buttonStyle(BasicButtonStyle())
-                    .padding()
-                    .frame(idealWidth: 70)
-                    .frame(height: 32)
-                    .fixedSize()
+                    .padding(.horizontal, 16)
+                    .frame(height: 30)
                     .background(
                         Capsule().fill(dynamicColors ? primaryColor : Color("FontColor"))
                     )
@@ -1543,12 +1520,9 @@ private struct LCSourceAppBanner: View {
                 }
             }
         }
-        .padding()
-        .frame(height: 88)
-        .background {
-            RoundedRectangle(cornerSize: CGSize(width: 22, height: 22))
-                .fill(backgroundColor)
-        }
+        // 不再自带卡背景/圆角：本行已是源段卡里的一行，
+        // 段卡即边框（用户：别套两层、别留多余间隙）。
+        .frame(height: 72)
         .onTapGesture {
             if !isBatchMode {
                 showDetail = true

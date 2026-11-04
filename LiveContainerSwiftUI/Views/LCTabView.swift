@@ -216,6 +216,23 @@ struct LCTabView: View {
             .overlay(alignment: .bottomTrailing) {
                 globalSearchButton
             }
+            .overlay {
+                // 搜索开着时，点页面其他任何地方：键盘与
+                // 搜索栏一起收起（用户定）。透明层只接点
+                // 按，滚动拖动照常穿透到底下页面；底部让
+                // 出搜索栏 + 标签栏的高度，那片不归它管
+                // （取消钮、输入框、标签照常可点）。
+                if globalSearch.isActive {
+                    Color.clear
+                        .contentShape(Rectangle())
+                        .padding(.bottom, 140)
+                        .simultaneousGesture(
+                            TapGesture().onEnded {
+                                closeGlobalSearch()
+                            }
+                        )
+                }
+            }
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 globalSearchBar
             }
@@ -257,6 +274,23 @@ struct LCTabView: View {
             .overlay(alignment: .bottomTrailing) {
                 globalSearchButton
             }
+            .overlay {
+                // 搜索开着时，点页面其他任何地方：键盘与
+                // 搜索栏一起收起（用户定）。透明层只接点
+                // 按，滚动拖动照常穿透到底下页面；底部让
+                // 出搜索栏 + 标签栏的高度，那片不归它管
+                // （取消钮、输入框、标签照常可点）。
+                if globalSearch.isActive {
+                    Color.clear
+                        .contentShape(Rectangle())
+                        .padding(.bottom, 140)
+                        .simultaneousGesture(
+                            TapGesture().onEnded {
+                                closeGlobalSearch()
+                            }
+                        )
+                }
+            }
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 globalSearchBar
             }
@@ -268,12 +302,41 @@ struct LCTabView: View {
         }
     }
 
-    // 圆形搜索键与标签栏的对齐间距：iOS 26 的标签栏是浮动
-    // 胶囊（悬在底部安全区上方），键与它同高并排；旧标签栏
-    // 是全宽贴底，键浮在它上方。
+    // 圆形搜索键与标签栏的对齐：iOS 26 的标签栏是浮动胶
+    // 囊，搜索键与它同高并排——直径就取胶囊高（用户截图
+    // 实测约 63pt），底边与胶囊底边对齐即圆心对齐（此
+    // 前 52 直径 + 36 间距，键又小又骑在胶囊右上角）。
+    // 旧标签栏是全宽贴底，键浮在它上方（92 不变）。
     private var searchButtonBottomPadding: CGFloat {
-        if #available(iOS 26.0, *) { return 36 }
+        if #available(iOS 26.0, *) { return 3 }
         return 92
+    }
+
+    // iOS 26 液态玻璃背景：系统玻璃（可交互版给按钮用，
+    // 按压有玻璃回弹），旧系统退回超薄材质 + 同款阴影与
+    // 描边。玻璃自带高光边缘，26 上不再叠手动阴影。
+    private struct CZFGlassBackground<S: Shape>: ViewModifier {
+        let shape: S
+        let interactive: Bool
+        func body(content: Content) -> some View {
+            if #available(iOS 26.0, *) {
+                if interactive {
+                    content.glassEffect(.regular.interactive(), in: shape)
+                } else {
+                    content.glassEffect(.regular, in: shape)
+                }
+            } else {
+                content
+                    .background {
+                        shape
+                            .fill(.ultraThinMaterial)
+                            .shadow(color: .black.opacity(0.15), radius: 10, x: 0, y: 3)
+                    }
+                    .overlay {
+                        shape.strokeBorder(Color.primary.opacity(0.06), lineWidth: 1)
+                    }
+            }
+        }
     }
 
     // 底部圆形搜索键：浮在标签栏右侧，不挡任何标签的点击。
@@ -283,17 +346,10 @@ struct LCTabView: View {
                 globalSearch.isActive = true
             } label: {
                 Image(systemName: "magnifyingglass")
-                    .font(.system(size: 20, weight: .semibold))
+                    .font(.system(size: 23, weight: .semibold))
                     .foregroundStyle(.primary)
-                    .frame(width: 52, height: 52)
-                    .background {
-                        Circle()
-                            .fill(Color(UIColor.secondarySystemBackground))
-                            .shadow(color: .black.opacity(0.18), radius: 8, x: 0, y: 2)
-                    }
-                    .overlay {
-                        Circle().strokeBorder(Color.primary.opacity(0.06), lineWidth: 1)
-                    }
+                    .frame(width: 63, height: 63)
+                    .modifier(CZFGlassBackground(shape: Circle(), interactive: true))
             }
             .buttonStyle(.plain)
             .padding(.trailing, 16)
@@ -329,11 +385,7 @@ struct LCTabView: View {
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 11)
-            .background {
-                Capsule()
-                    .fill(Color(UIColor.secondarySystemBackground))
-                    .shadow(color: .black.opacity(0.15), radius: 10, x: 0, y: 3)
-            }
+            .modifier(CZFGlassBackground(shape: Capsule(), interactive: false))
             .padding(.horizontal, 12)
             .padding(.top, 6)
             .padding(.bottom, 8)

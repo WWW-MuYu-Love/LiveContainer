@@ -320,6 +320,14 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
                 }
 
             }
+            // 点列表任何其他位置、或开始滚动：把滑开着的
+            // 应用行按钮收回（用户定，横幅行监听此通知）
+            .simultaneousGesture(TapGesture().onEnded {
+                NotificationCenter.default.post(name: LCAppBannerViewController.czfCloseSwipeNotification, object: nil)
+            })
+            .simultaneousGesture(DragGesture(minimumDistance: 12).onChanged { _ in
+                NotificationCenter.default.post(name: LCAppBannerViewController.czfCloseSwipeNotification, object: nil)
+            })
             .navigationBarProgressBar(show:$installprogressVisible, progress: $installProgressPercentage)
             .coordinateSpace(name: "scroll")
             .onAppear {

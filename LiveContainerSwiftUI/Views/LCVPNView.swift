@@ -10,6 +10,7 @@
 //  顶部状态卡 + 核心起停/测速/核心选项逻辑原样保留。
 //
 
+import CoreImage
 import Foundation
 import LiveContainerShared
 import SwiftUI
@@ -30,6 +31,14 @@ struct LCVPNView: View {
     @State var vpnGroupBusyId: String?
     @State var groupInfoTarget: CZFVPNManager.CZFVPNNodeGroup?
     @State var showGroupInfo = false
+    // 组头左滑二维码的展示目标、左滑删除的待确认组、改名
+    // 弹窗的目标与输入（改名从组信息弹窗的「编辑名称」进）
+    @State var groupQRTarget: CZFVPNManager.CZFVPNNodeGroup?
+    @State var groupPendingDelete: CZFVPNManager.CZFVPNNodeGroup?
+    @State var showGroupDeleteConfirm = false
+    @State var groupRenameTarget: CZFVPNManager.CZFVPNNodeGroup?
+    @State var groupRenameText = ""
+    @State var showGroupRename = false
     @State var vpnHostProxy = false
     @AppStorage("CZFVPNPrewarm") var vpnPrewarm = true
     @AppStorage("CZFVPNAutoRotate") var vpnAutoRotate = true
@@ -103,6 +112,17 @@ struct LCVPNView: View {
             }
             .alert(groupInfoTarget?.name ?? "", isPresented: $showGroupInfo) {
                 if let g = groupInfoTarget, !g.isLocal {
+                    // 名称处加改名入口：点它进改名弹窗，改完
+                    // 同步组头卡片，且订阅刷新不覆盖（管理层
+                    // 记 customName）。本弹窗先关，改名弹窗延
+                    // 一拍再弹，免得两个弹窗打架。
+                    Button("编辑名称") {
+                        groupRenameTarget = g
+                        groupRenameText = g.name
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                            showGroupRename = true
+                        }
+                    }
                     Button("删除整组", role: .destructive) {
                         deleteGroup(g)
                     }
@@ -110,6 +130,31 @@ struct LCVPNView: View {
                 Button("好", role: .cancel) {}
             } message: {
                 Text(groupInfoTarget.map { groupDetailText($0) } ?? "")
+            }
+            .alert("编辑名称", isPresented: $showGroupRename) {
+                TextField("名称", text: $groupRenameText)
+                Button("保存") {
+                    saveGroupRename()
+                }
+                Button("lc.common.cancel".loc, role: .cancel) {}
+            } message: {
+                Text("改完同步到订阅卡片上，之后刷新订阅也不会被覆盖")
+            }
+            .alert("删除订阅组", isPresented: $showGroupDeleteConfirm) {
+                Button("删除整组", role: .destructive) {
+                    if let g = groupPendingDelete {
+                        deleteGroup(g)
+                    }
+                    groupPendingDelete = nil
+                }
+                Button("lc.common.cancel".loc, role: .cancel) {
+                    groupPendingDelete = nil
+                }
+            } message: {
+                Text(groupPendingDelete.map { "「\($0.name)」及其 \($0.links.count) 个节点会被删除" } ?? "")
+            }
+            .sheet(item: $groupQRTarget) { group in
+                groupQRCodeSheet(group)
             }
             .alert("lc.common.error".loc, isPresented: $errorShow){
             } message: {
@@ -439,6 +484,12 @@ struct LCVPNView: View {
 
     @ViewBuilder private func groupSection(_ group: CZFVPNManager.CZFVPNNodeGroup) -> some View {
         Section {
+            // 组头是段内第一行（不再用 section header）：
+            // header 的系统内边距比行大一圈，卡片会比下面
+            // 的节点卡短一截、中间还隔着系统间距——用户实
+            // 图指出边框一长一短、一个订阅被拆成两张卡。
+            // 组头进段后与节点同卡同宽、上下紧贴无留空。
+            groupHeader(group)
             if !group.collapsed {
                 if group.links.isEmpty {
                     Text(group.isLocal ? "暂无本地节点：粘贴链接添加，或导入订阅" : "暂无节点，点组头刷新按钮拉取")
@@ -472,81 +523,114 @@ struct LCVPNView: View {
                 // 测完再点才是真切。单节点复测同理。
                 .disabled(vpnPinging || vpnSinglePinging)
             }
-        } header: {
-            groupHeader(group)
         }
     }
 
     @ViewBuilder private func groupHeader(_ group: CZFVPNManager.CZFVPNNodeGroup) -> some View {
-        // 组头是整张按钮卡（照小火箭）：订阅名就是按钮，白
-        // 色圆角卡铺满整行，点卡身（除刷新/信息两颗钮）展开
-        // 或收起，节点从卡下方弹出。卡内两颗钮自己消费点击，
-        // 不会触发卡身的点按手势。
-        VStack(alignment: .leading, spacing: 3) {
-            HStack(spacing: 7) {
-                HStack(spacing: 7) {
-                    Image(systemName: group.collapsed ? "chevron.right" : "chevron.down")
-                        .font(.system(size: 14, weight: .bold))
-                        .foregroundStyle(.blue)
-                    Text(group.name)
-                        .font(.system(size: 17, weight: .semibold))
-                        .foregroundStyle(.primary)
+        // 组头即按钮（照小火箭）：组头行就是段卡的第一行，
+        // 与节点同卡、同宽、紧贴无留空。布局：左大箭头，
+        // 中间一列组名 + 紧贴其下的信息行（流量/到期，对
+        // 齐组名不缩进到箭头下），右侧刷新/信息两颗 19 号
+        // 钮贴右并排。整行高约 48：无信息行的本地组用
+        // minHeight 36 撑到同高，与订阅组卡片大小一致。
+        // 点行身（除两颗钮）展开/收起。左右滑（仅订阅
+        // 组）：右滑测试（=只测本组延迟）/更新，左滑二维
+        // 码/删除，与节点行的滑动同一套。
+        HStack(spacing: 8) {
+            Image(systemName: group.collapsed ? "chevron.right" : "chevron.down")
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(.blue)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(group.name)
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                // 订阅组信息行：流量与到期，紧挨组名（同列
+                // 第二行，不再隔着按钮行高留空）。
+                if group.upload != nil || group.download != nil || group.total != nil || group.expire != nil {
+                    groupInfoLine(group)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
                         .lineLimit(1)
                 }
-                Spacer()
-                if !group.isLocal {
-                    if vpnGroupBusyId == group.id {
-                        ProgressView()
-                            .controlSize(.small)
-                    } else {
-                        Button {
-                            refreshGroup(group)
-                        } label: {
-                            // 照小火箭组头那颗：双箭头环形大图标
-                            // （原来 15 号太小难按），点击区给到
-                            // 40×40，与旁边的信息圆圈视觉同级。
-                            Image(systemName: "arrow.2.circlepath")
-                                .font(.system(size: 23, weight: .medium))
-                                .foregroundStyle(.blue)
-                                .frame(width: 40, height: 40)
-                                .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                        .disabled(vpnPinging || vpnSinglePinging || vpnGroupBusyId != nil)
+            }
+            Spacer()
+            if !group.isLocal {
+                if vpnGroupBusyId == group.id {
+                    ProgressView()
+                        .controlSize(.small)
+                        .frame(width: 30, height: 30)
+                } else {
+                    Button {
+                        refreshGroup(group)
+                    } label: {
+                        // 与最右信息圆圈同为 19 号（用户定：
+                        // 两颗一样大），点击区 30 见方。
+                        Image(systemName: "arrow.2.circlepath")
+                            .font(.system(size: 19, weight: .medium))
+                            .foregroundStyle(.blue)
+                            .frame(width: 30, height: 30)
+                            .contentShape(Rectangle())
                     }
+                    .buttonStyle(.plain)
+                    .disabled(vpnPinging || vpnSinglePinging || vpnGroupBusyId != nil)
                 }
-                Button {
-                    groupInfoTarget = group
-                    showGroupInfo = true
-                } label: {
-                    Image(systemName: "info.circle")
-                        .font(.system(size: 19))
-                        .foregroundStyle(.blue)
-                }
-                .buttonStyle(.plain)
             }
-            // 订阅组信息行：流量与到期（SF 箭头符号与文字
-            // 同基线，不用文本箭头免得高低不齐）。
-            if group.upload != nil || group.download != nil || group.total != nil || group.expire != nil {
-                groupInfoLine(group)
-                    .font(.system(size: 11.5))
-                    .foregroundStyle(.secondary)
-                    .padding(.leading, 26)
+            Button {
+                groupInfoTarget = group
+                showGroupInfo = true
+            } label: {
+                Image(systemName: "info.circle")
+                    .font(.system(size: 19))
+                    .foregroundStyle(.blue)
+                    .frame(width: 30, height: 30)
+                    .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
         }
-        .textCase(nil)
-        .padding(.horizontal, 16)
-        .padding(.vertical, 12)
-        .background(
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .fill(Color(UIColor.systemBackground))
-        )
-        .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .contentShape(Rectangle())
         .onTapGesture {
             CZFVPNManager.shared.setGroupCollapsed(id: group.id, collapsed: !group.collapsed)
             refreshVPNState()
         }
-        .padding(.bottom, 2)
+        .frame(minHeight: 36)
+        // 行内边距与节点行同宽对齐（左右 16），段卡即它
+        // 的边框，不再自带圆角卡背景。
+        .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
+        .swipeActions(edge: .leading, allowsFullSwipe: false) {
+            if !group.isLocal {
+                Button {
+                    startGroupPing(group)
+                } label: {
+                    Label("测试", systemImage: "speedometer")
+                }
+                .tint(.green)
+                .disabled(vpnPinging || vpnSinglePinging || vpnGroupBusyId != nil)
+                Button {
+                    refreshGroup(group)
+                } label: {
+                    Label("更新", systemImage: "arrow.clockwise")
+                }
+                .tint(.gray)
+                .disabled(vpnPinging || vpnSinglePinging || vpnGroupBusyId != nil)
+            }
+        }
+        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+            if !group.isLocal {
+                Button(role: .destructive) {
+                    groupPendingDelete = group
+                    showGroupDeleteConfirm = true
+                } label: {
+                    Label("删除", systemImage: "trash")
+                }
+                Button {
+                    groupQRTarget = group
+                } label: {
+                    Label("二维码", systemImage: "qrcode")
+                }
+                .tint(.gray)
+            }
+        }
     }
 
     // 组头信息行：↑已用 ↓已用 · 共总量 · 到期日，有哪项显哪项
@@ -743,6 +827,126 @@ struct LCVPNView: View {
         refreshVPNState()
         successInfo = "已删除分组「\(group.name)」及其节点"
         successShow = true
+    }
+
+    // 组头右滑「测试」：只测这一组的节点，规则与全量测
+    // 速一致（核心在跑先停、测完重启原来那条、被拒不覆
+    // 写旧结果）；结果按扁平下标合并进结果表并逐条落缓
+    // 存，其他组的结果不动。
+    func startGroupPing(_ group: CZFVPNManager.CZFVPNNodeGroup) {
+        guard !vpnPinging && !vpnSinglePinging && vpnGroupBusyId == nil else { return }
+        let indices = group.links.compactMap { vpnNodes.firstIndex(of: $0) }
+        guard !indices.isEmpty else { return }
+        let pingStoppedCore = CZFVPNManager.shared.stopCoreForPing()
+        vpnPinging = true
+        vpnPingRejected = false
+        vpnPingDone = 0
+        vpnPingTotal = indices.count
+        vpnPingPhase = "测速"
+        CZFVPNManager.shared.pingNodes(atIndices: indices, onProgress: { done, total, phase in
+            vpnPingDone = done
+            vpnPingTotal = total
+            vpnPingPhase = phase
+        }) { pairs, rejected in
+            if rejected {
+                vpnPingRejected = true
+            } else {
+                for (idx, r) in pairs where vpnNodes.indices.contains(idx) {
+                    vpnPingResults[idx] = r
+                    vpnPingStaleIndices.remove(idx)
+                    vpnSingleRejectedLinks.remove(vpnNodes[idx])
+                    savePingResult(link: vpnNodes[idx], result: r)
+                }
+                vpnPingRejected = false
+            }
+            if pingStoppedCore {
+                CZFVPNManager.shared.restartCoreAfterPing()
+            }
+            vpnPinging = false
+            vpnPingDone = 0
+            vpnPingTotal = 0
+            refreshVPNState()
+        }
+    }
+
+    // 改名保存：落到管理层记自定义名，组头卡片立即同步，
+    // 订阅刷新沿用新名不覆盖；信息弹窗的目标也跟着换新。
+    func saveGroupRename() {
+        guard let g = groupRenameTarget else { return }
+        CZFVPNManager.shared.renameGroup(id: g.id, name: groupRenameText)
+        refreshVPNState()
+        if groupInfoTarget?.id == g.id {
+            groupInfoTarget = vpnGroups.first(where: { $0.id == g.id }) ?? groupInfoTarget
+        }
+        groupRenameTarget = nil
+    }
+
+    // 组头左滑「二维码」面板：订阅地址的二维码（别人扫
+    // 了直接导入）+ 地址原文 + 系统分享。
+    @ViewBuilder private func groupQRCodeSheet(_ group: CZFVPNManager.CZFVPNNodeGroup) -> some View {
+        NavigationView {
+            VStack(spacing: 18) {
+                if let url = group.sourceURL, let img = qrCodeImage(url) {
+                    Image(uiImage: img)
+                        .interpolation(.none)
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: 240, height: 240)
+                }
+                if let url = group.sourceURL {
+                    Text(url)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                }
+                Button {
+                    if let url = group.sourceURL {
+                        shareItems([url])
+                    }
+                } label: {
+                    Label("分享订阅地址", systemImage: "square.and.arrow.up")
+                }
+                .buttonStyle(.borderedProminent)
+                .buttonBorderShape(.capsule)
+                Spacer()
+            }
+            .padding(24)
+            .navigationTitle(group.name)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("好") { groupQRTarget = nil }
+                }
+            }
+        }
+    }
+
+    // 二维码生成：系统 CIQRCodeGenerator，放大 10 倍出
+    // 图，显示层关插值保持锐利。
+    private func qrCodeImage(_ string: String) -> UIImage? {
+        guard let filter = CIFilter(name: "CIQRCodeGenerator") else { return nil }
+        filter.setValue(Data(string.utf8), forKey: "inputMessage")
+        filter.setValue("M", forKey: "inputCorrectionLevel")
+        guard let output = filter.outputImage else { return nil }
+        let scaled = output.transformed(by: CGAffineTransform(scaleX: 10, y: 10))
+        guard let cg = CIContext().createCGImage(scaled, from: scaled.extent) else { return nil }
+        return UIImage(cgImage: cg)
+    }
+
+    // 系统分享面板（从当前最顶层控制器present，面板里
+    // 调用时顶层就是二维码面板自己）。
+    private func shareItems(_ items: [Any]) {
+        guard let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+              let root = scene.windows.first(where: { $0.isKeyWindow })?.rootViewController else { return }
+        var top = root
+        while let presented = top.presentedViewController { top = presented }
+        let vc = UIActivityViewController(activityItems: items, applicationActivities: nil)
+        if let pop = vc.popoverPresentationController {
+            pop.sourceView = top.view
+            pop.sourceRect = CGRect(x: top.view.bounds.midX, y: top.view.bounds.midY, width: 0, height: 0)
+            pop.permittedArrowDirections = []
+        }
+        top.present(vc, animated: true)
     }
 
     /// 按延迟排序（分组版）：各组内部按同一把尺子排（通的

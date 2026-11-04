@@ -549,9 +549,13 @@ public final class CZFVPNManager {
         public var total: Int64?
         public var expire: TimeInterval?
         public var collapsed: Bool
-        public init(id: String, name: String, sourceURL: String?, links: [String], upload: Int64?, download: Int64?, total: Int64?, expire: TimeInterval?, collapsed: Bool) {
+        // 用户改的组名：非空时订阅刷新不覆盖（见 upsert 与
+        // renameGroup）；可选字段，旧存档解码自动为 nil。
+        public var customName: String?
+        public init(id: String, name: String, sourceURL: String?, links: [String], upload: Int64?, download: Int64?, total: Int64?, expire: TimeInterval?, collapsed: Bool, customName: String? = nil) {
             self.id = id
             self.name = name
+            self.customName = customName
             self.sourceURL = sourceURL
             self.links = links
             self.upload = upload
@@ -637,7 +641,7 @@ public final class CZFVPNManager {
         let isNew: Bool
         if let idx = groups.firstIndex(where: { $0.sourceURL == url }) {
             groups[idx].links = cleaned
-            groups[idx].name = name
+            groups[idx].name = groups[idx].customName ?? name
             groups[idx].upload = fetch.upload
             groups[idx].download = fetch.download
             groups[idx].total = fetch.total
@@ -666,6 +670,23 @@ public final class CZFVPNManager {
         guard let idx = groups.firstIndex(where: { $0.id == id }) else { return }
         groups[idx].collapsed = collapsed
         storeGroups(groups)
+    }
+
+    /// 改组名（订阅组）：记为自定义名并立即生效，之后订
+    /// 阅刷新沿用这个名字、不再被订阅自带标题覆盖；传空
+    /// 名 = 清掉自定义名，下次刷新回到订阅自带名。
+    public func renameGroup(id: String, name: String) {
+        var groups = nodeGroups()
+        guard let idx = groups.firstIndex(where: { $0.id == id }), groups[idx].sourceURL != nil else { return }
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            groups[idx].customName = nil
+        } else {
+            groups[idx].customName = trimmed
+            groups[idx].name = trimmed
+        }
+        storeGroups(groups)
+        refreshSettingsBackup()
     }
 
     /// 组内排序落盘（按延迟排序用）：只改各组 links 的顺序，
@@ -1829,6 +1850,81 @@ public final class CZFVPNManager {
             let finalRejected = (coreRunningAtStart || coreRunningAtEnd) && outcome.batchRejected
             let item = outcome.items.first
             DispatchQueue.main.async { completion(item, finalRejected) }
+        }
+    }
+
+    /// 只测指定下标的一组节点（组头右滑「测试」用）：与
+    /// pingSingleNode 同一套只读语义（立 isPinging、绝不
+    /// 动核心启停、被拒不覆写）与三地址重试，只是子集从
+    /// 一条变多条；completion 回主线程，带 (扁平下标, 结
+    /// 果) 对，界面按下标合并进结果表、逐条落缓存。
+    public func pingNodes(atIndices indices: [Int], onProgress: ((Int, Int, String) -> Void)? = nil, completion: @escaping ([(Int, CZFNodePingResult)], Bool) -> Void) {
+        let all = nodeLinks
+        let valid = indices.filter { all.indices.contains($0) }
+        guard !valid.isEmpty else { completion([], false); return }
+        let links = valid.map { all[$0] }
+        vpnCoreLock.lock()
+        isPinging = true
+        vpnCoreLock.unlock()
+        DispatchQueue.global(qos: .userInitiated).async {
+            self.vpnCoreLock.lock()
+            self.isPinging = true
+            self.pingRetryLink = nil
+            self.pingGeneration += 1
+            let epochAtPingStart = self.coreActionEpoch
+            let coreRunningAtStart = self.isRunning
+            let prePingActiveLink = self.nodeLink
+            self.vpnCoreLock.unlock()
+            var outcome = self.runPingBatches(links: links, url: "https://cp.cloudflare.com/", phase: "测速", onProgress: onProgress)
+            let pingRejected = coreRunningAtStart && outcome.batchRejected
+            if !pingRejected {
+                var failedPositions = outcome.items.enumerated().filter { !$0.element.success }.map { $0.offset }
+                for retryURL in ["https://www.gstatic.com/generate_204", "https://captive.apple.com/hotspot-detect.html"] {
+                    if failedPositions.isEmpty { break }
+                    let failedLinks = failedPositions.map { links[$0] }
+                    let retry = self.runPingBatches(links: failedLinks, url: retryURL, phase: "重试", onProgress: onProgress)
+                    var stillFailed: [Int] = []
+                    for (j, pos) in failedPositions.enumerated() {
+                        if retry.items[j].success {
+                            outcome.items[pos] = retry.items[j]
+                        } else {
+                            stillFailed.append(pos)
+                        }
+                    }
+                    failedPositions = stillFailed
+                }
+            }
+            var deferredApp: LCAppInfo?
+            var deferredHost = false
+            var postPingActiveLink = prePingActiveLink
+            self.vpnCoreLock.lock()
+            let epochChanged = self.coreActionEpoch != epochAtPingStart
+            if !epochChanged {
+                self.prewarmSuppressedAfterPing = !self.isRunning
+            } else {
+                self.pingRetryLink = nil
+            }
+            postPingActiveLink = self.nodeLink
+            deferredApp = self.deferredEnsureApp
+            self.deferredEnsureApp = nil
+            deferredHost = self.deferredHostEnsure
+            self.deferredHostEnsure = false
+            self.isPinging = false
+            self.vpnCoreLock.unlock()
+            if let deferredApp {
+                self.ensureRunning(for: deferredApp)
+            } else if postPingActiveLink != prePingActiveLink {
+                self.applyActiveNodeChange()
+            }
+            if deferredHost {
+                self.ensureRunningForHost()
+            }
+            self.vpnCoreLock.lock()
+            let coreRunningAtEnd = self.isRunning
+            self.vpnCoreLock.unlock()
+            let finalRejected = (coreRunningAtStart || coreRunningAtEnd) && outcome.batchRejected
+            let pairs = zip(valid, outcome.items).map { ($0.0, $0.1) }
+            DispatchQueue.main.async { completion(pairs, finalRejected) }
         }
     }
 
