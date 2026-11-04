@@ -359,11 +359,15 @@ struct LCTabView: View {
     }
 
     private var globalSearchPlaceholder: String {
-        switch sharedModel.selectedTab {
+        // .search 只在 iOS 26 搜索标签下出现，那条路不用这个
+        // 占位文案；真遇到时按上一个内容标签取，保持穷尽。
+        let tab = sharedModel.selectedTab == .search ? globalSearch.lastContentTab : sharedModel.selectedTab
+        switch tab {
         case .sources: return "搜索源"
         case .apps: return "搜索 App"
         case .tweaks: return "搜索模块"
         case .settings, .vpn: return "搜索设置"
+        case .search: return "搜索 App"
         }
     }
 
