@@ -9,6 +9,10 @@ workflows:
     max_build_duration: 120
     environment:
       xcode: 26.2
+      # GH_TOKEN（加密）在 Codemagic 后台的 default 分组里，
+      # YAML 工作流必须显式导入分组才能读到。
+      groups:
+        - default
       vars:
         scheme: LiveContainer
         archive_path: archive
