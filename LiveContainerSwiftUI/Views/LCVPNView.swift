@@ -2,9 +2,10 @@
 //  LCVPNView.swift
 //  LiveContainerSwiftUI
 //
-//  VPN 独立标签页：原设置页的「单App VPN」段整体迁出，
-//  节点管理、测速、核心起停的逻辑与状态原样保留，
-//  只换容器：顶部状态卡 + 节点管理 / 核心选项两段。
+//  代理设置页：曾是独立 VPN 标签页，用户定版撤标签、
+//  改回设置页子页（入口在设置主页、应用设置下方）并
+//  改名「代理设置」。节点管理、测速、核心起停的逻辑
+//  与状态原样保留：顶部状态卡 + 节点管理 / 核心选项。
 //
 
 import Foundation
@@ -66,12 +67,15 @@ struct LCVPNView: View {
     }
 
     var body: some View {
-        NavigationView {
-            Form {
-                statusSection
-                vpnSection
-            }
-            .navigationBarTitle("VPN")
+        // 已从独立标签页改成设置页子页（用户定版）：不再
+        // 自带 NavigationView，借设置页的导航栈推进来，
+        // 标题改名「代理设置」；下面的确认框/提示框原样
+        // 挂在 Form 上，行为不变。
+        Form {
+            statusSection
+            vpnSection
+        }
+        .navigationBarTitle("代理设置")
             .confirmationDialog("替换全部节点？", isPresented: $showSubReplaceConfirm, titleVisibility: .visible) {
                 Button("替换为订阅的 \(pendingSubLinks.count) 个节点", role: .destructive) {
                     applySubscriptionLinks(pendingSubLinks)
@@ -112,8 +116,6 @@ struct LCVPNView: View {
             } message: {
                 Text(successInfo)
             }
-        }
-        .navigationViewStyle(StackNavigationViewStyle())
         // 切回前台刷新核心状态：核心在后台被自动停、被别的
         // App 起停后，设置页按钮还是旧状态，下一按钮一刷新
         // 才翻出来、看起来像那个按钮切的；切回前台就刷新，

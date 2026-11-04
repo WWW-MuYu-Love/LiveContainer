@@ -118,6 +118,8 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
     @State private var isViewAppeared = false
     
     @ObservedObject var searchContext: SearchContext = SearchContext()
+    @ObservedObject private var globalSearch = CZFSearchCenter.shared
+    @Environment(\.czfInSearchTab) private var czfInSearchTab
     var sortedApps: [LCAppModel] {
         return sharedAppSortManager.sortedApps
     }
@@ -664,7 +666,21 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
                 Task { await launchAppWithBundleId(bundleId: bundleId, container: nil) }
             }
         }
-        .searchable(text: $searchContext.query)
+        .czfSearchable(text: $searchContext.query, placement: .automatic, disabled: czfInSearchTab)
+        .onChange(of: globalSearch.query) { newValue in
+            // 全局搜索（底部搜索框）驱动本页：开着时把词
+            // 同步进本页的 searchContext，走现成过滤/防抖，
+            // 不另造一套；本页自己的搜索栏不受影响。
+            if globalSearch.isActive {
+                searchContext.query = newValue
+            }
+        }
+        .onChange(of: globalSearch.isActive) { active in
+            // 取消全局搜索时把同步进来的词清掉，列表恢复全量
+            if !active {
+                searchContext.query = ""
+            }
+        }
 
     }
     

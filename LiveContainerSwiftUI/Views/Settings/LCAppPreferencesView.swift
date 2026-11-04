@@ -19,6 +19,10 @@ struct LCAppPreferencesView: View {
     @AppStorage("LCStrictHiding", store: LCUtils.appGroupUserDefault) var strictHiding = false
     @AppStorage("dynamicColors", store: LCUtils.appGroupUserDefault) var dynamicColors = true
     @AppStorage("darkModeIcon", store: LCUtils.appGroupUserDefault) var darkModeIcon = false
+    // 后台保活（从设置主页移入，键不变）：默认开，掉线根因
+    // 见 LCSettingsView 静态同步函数注释——重装归零会让
+    // 切后台就被挂起断网，默认开 + 启动同步兜底。
+    @AppStorage("LCKeepAliveEnabled") var keepAliveEnabled = true
 
     private var store: Store { LCUtils.store() }
 
@@ -143,6 +147,7 @@ struct LCAppPreferencesView: View {
             interfaceSection
             multiLCSection
             multitaskSection
+            keepAliveSection
         }
         .navigationTitle("应用设置")
     }
@@ -227,6 +232,28 @@ struct LCAppPreferencesView: View {
                 }
             } footer: {
                 Text("lc.settings.multitaskDesc".loc)
+            }
+        }
+    }
+
+    @ViewBuilder private var keepAliveSection: some View {
+        // 后台保活（从设置主页移入，用户定版）：开关与行为
+        // 原样，同步走 LCSettingsView 的静态版（启动同步
+        // 共用同一份），刷新宿主保活状态同旧段。
+        Section(header: Text("后台保活")) {
+            Toggle(isOn: $keepAliveEnabled) {
+                HStack {
+                    LCSettingsIcon(systemName: "heart.fill", color: .red)
+                    Text("保活（无声音频）")
+                }
+            }
+            .onChange(of: keepAliveEnabled) { newValue in
+                LCSettingsView.syncKeepAliveTweak(enabled: newValue, forceSign: false)
+                CZFHostKeepAlive.shared.refresh()
+            }
+            .onAppear {
+                LCSettingsView.syncKeepAliveTweak(enabled: keepAliveEnabled, forceSign: false)
+                CZFHostKeepAlive.shared.refresh()
             }
         }
     }

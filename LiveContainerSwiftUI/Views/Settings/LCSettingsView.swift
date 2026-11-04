@@ -55,6 +55,21 @@ struct LCSettingsView: View {
     @State var successShow = false
     @State var successInfo = ""
 
+    // 更新检查（从「更新」子页移回主页，点一下直接检查）
+    @State private var updateStatusText = "点一下检查"
+    @State private var updateChecking = false
+    @State private var updateInfo: CZFUpdateInfo?
+
+    @ObservedObject private var globalSearch = CZFSearchCenter.shared
+
+    // 全局搜索（底部搜索框）过滤设置主页：词命中某段的
+    // 关键词才显示那段；搜索没开或词为空时全显示。
+    private func czfSettingsSearchVisible(_ keywords: String) -> Bool {
+        let q = globalSearch.query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard globalSearch.isActive, !q.isEmpty else { return true }
+        return keywords.localizedCaseInsensitiveContains(q)
+    }
+
     @State private var certificateDataFound = false
 
     // 续签区已整段删掉（2026-10-29 用户亲定“没什么用”）：
@@ -80,12 +95,9 @@ struct LCSettingsView: View {
     @AppStorage("LCSelected32BitEmulator", store: LCUtils.appGroupUserDefault) var selected32BitEmulator : String = ""
     @AppStorage("LCKeepSelectedWhenQuit") var keepSelectedWhenQuit = false
     @AppStorage("LCWaitForDebugger") var waitForDebugger = false
-    // 保活默认开：掉线根因——开关存在 UserDefaults 里，删了
-    // 重装就归零；以前开着时全局注入、切后台不掉线，重装后
-    // 开关回到关、打开设置页时 onAppear 还会把 dylib 删掉，
-    // 之后一切换后台就被系统挂起断网。默认开 + 启动同步，
-    // 重装后第一次启动即恢复保活；不想保活再手动关
-    @AppStorage("LCKeepAliveEnabled") var keepAliveEnabled = true
+    // 保活开关已随「后台保活」段移入应用设置页
+    // （LCAppPreferencesView），键 LCKeepAliveEnabled 不变；
+    // 静态同步函数还留在本文件（启动同步要用）。
     // 宿主通知授权状态（CZF，2026-10-29 通知恢复）：
     // 游客通知以宿主身份发出，系统里 LiveContainer 没授权，
     // 通知就会静默丢掉；这行就是让用户一眼看到授权状态、
@@ -106,16 +118,17 @@ struct LCSettingsView: View {
     var body: some View {
         NavigationView {
             Form {
-                jitLessSection
-                jitSection
-                emulatorSection
-                miscSection
-                storageSection
-                keepAliveSection
-                aboutSection
-                updateSection
+                // 全局搜索开着时按段关键词过滤（搜索设置）：
+                // 段内标题命中才显示；没开/词空时全显示。
+                if czfSettingsSearchVisible("jit 证书 导入证书 删除证书 诊断 无jit jitless") { jitLessSection }
+                if czfSettingsSearchVisible("jit 地址 udid 启用器 sidejitserver stikdebug sidestore") { jitSection }
+                if czfSettingsSearchVisible("32 模拟器 emulator 翻译层 32位") { emulatorSection }
+                if czfSettingsSearchVisible("应用设置 代理设置 vpn 多任务 外观 界面") { miscSection }
+                if czfSettingsSearchVisible("存储管理 数据管理 储存 备份 清理") { storageSection }
+                if czfSettingsSearchVisible("关于 github twitter 作者 livecontainer") { aboutSection }
+                if czfSettingsSearchVisible("更新 版本 检查更新 update") { updateSection }
                 versionFooter
-                developerSection
+                if czfSettingsSearchVisible("开发者 注入 调试 developer 模式") { developerSection }
             }
             .navigationBarTitle("lc.tabView.settings".loc)
             .alert("lc.common.error".loc, isPresented: $errorShow){
@@ -311,6 +324,8 @@ struct LCSettingsView: View {
     @ViewBuilder private var miscSection: some View {
         // 杂项已收进「应用设置」子页（LCAppPreferencesView），
         // 主页只留一行入口，与存储管理同款，带图标不显突兀。
+        // 代理设置（原 VPN 标签页）入口紧跟其下（用户定版），
+        // 多 LC 从属实例不显示（与原 VPN 标签同规则）。
         Section {
             NavigationLink {
                 LCAppPreferencesView()
@@ -318,6 +333,16 @@ struct LCSettingsView: View {
                 HStack {
                     LCSettingsIcon(systemName: "apps.iphone", color: .indigo)
                     Text("应用设置")
+                }
+            }
+            if sharedModel.multiLCStatus != 2 {
+                NavigationLink {
+                    LCVPNView()
+                } label: {
+                    HStack {
+                        LCSettingsIcon(systemName: "network", color: .blue)
+                        Text("代理设置")
+                    }
                 }
             }
         }
@@ -346,24 +371,8 @@ struct LCSettingsView: View {
         }
     }
 
-    @ViewBuilder private var keepAliveSection: some View {
-        Section(header: Text("后台保活")) {
-            Toggle(isOn: $keepAliveEnabled) {
-                HStack {
-                    LCSettingsIcon(systemName: "heart.fill", color: .red)
-                    Text("保活（无声音频）")
-                }
-            }
-            .onChange(of: keepAliveEnabled) { newValue in
-                syncKeepAliveTweak(enabled: newValue)
-                CZFHostKeepAlive.shared.refresh()
-            }
-            .onAppear {
-                syncKeepAliveTweak(enabled: keepAliveEnabled)
-                CZFHostKeepAlive.shared.refresh()
-            }
-        }
-    }
+    // 「后台保活」段已移入应用设置页（LCAppPreferencesView，
+    // 用户定版），本文件只保留静态同步函数供启动同步调用。
 
     @ViewBuilder private var aboutSection: some View {
         Section {
@@ -392,25 +401,126 @@ struct LCSettingsView: View {
         }
     }
 
-    @ViewBuilder private var updateSection: some View {
-        // 更新已收进「更新」子页（LCUpdateView），主页只留一行
-        // 入口，与存储管理同款。
-        Section {
-            NavigationLink {
-                LCUpdateView()
-            } label: {
-                HStack {
-                    LCSettingsIcon(systemName: "arrow.down.circle", color: .blue)
-                    Text("更新")
+    private var currentAppVersion: String {
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "未知"
+    }
+
+    // App 内更新检查（CZF）：查自家仓库的 update release，对比
+    // 本机 LCVersionInfo 里的短提交号；有新版不自己下载安装
+    // （侧载 App 换不了自己的包），跳 SideInstaller 🅥 / Seal
+    // 下载、签名、覆盖安装。逻辑原样从原「更新」子页搬过来。
+    private func startUpdateCheck() {
+        guard !updateChecking else { return }
+        updateChecking = true
+        updateStatusText = "检查中…"
+        CZFUpdateCheck.check { result in
+            DispatchQueue.main.async {
+                updateChecking = false
+                switch result {
+                case .failure:
+                    updateInfo = nil
+                    updateStatusText = "检查失败，点一下重试"
+                case .success(let info):
+                    if let current = CZFUpdateCheck.currentCommit(), current == info.commit {
+                        updateInfo = nil
+                        updateStatusText = "已是最新（\(current)）"
+                    } else {
+                        updateInfo = info
+                        var text = "有新版：\(info.commit)"
+                        if let date = info.publishedAt {
+                            let formatter = DateFormatter()
+                            formatter.dateFormat = "yyyy-MM-dd"
+                            text += " · \(formatter.string(from: date))"
+                        }
+                        updateStatusText = text
+                    }
                 }
             }
         }
     }
 
+    private func openSideInstallerInstall() {
+        guard let info = updateInfo else { return }
+        var components = URLComponents()
+        components.scheme = "sideinstaller"
+        components.host = "install"
+        components.queryItems = [URLQueryItem(name: "url", value: info.downloadURL.absoluteString)]
+        guard let url = components.url else { return }
+        UIApplication.shared.open(url, options: [:]) { success in
+            if !success {
+                errorInfo = "没能打开 SideInstaller 🅥，请确认它已安装"
+                errorShow = true
+            }
+        }
+    }
+
+    // 去 Seal 更新：照抄 openSideInstallerInstall，只换 scheme。
+    // Seal 注册了 seal 和 sidestore 两个 scheme，用户定用
+    // sidestore://install?url= 这个格式，不要自创 seal://。
+    private func openSealInstall() {
+        guard let info = updateInfo else { return }
+        var components = URLComponents()
+        components.scheme = "sidestore"
+        components.host = "install"
+        components.queryItems = [URLQueryItem(name: "url", value: info.downloadURL.absoluteString)]
+        guard let url = components.url else { return }
+        UIApplication.shared.open(url, options: [:]) { success in
+            if !success {
+                errorInfo = "没能打开 Seal，请确认它已安装"
+                errorShow = true
+            }
+        }
+    }
+
+    @ViewBuilder private var updateSection: some View {
+        // 更新（用户定版：从子页移回设置主页，点一下直接检查；
+        // 查到新包时下面出现两个安装按钮，与子页时一致）
+        Section {
+            Button {
+                startUpdateCheck()
+            } label: {
+                HStack {
+                    LCSettingsIcon(systemName: "arrow.down.circle", color: .blue)
+                    Text("更新")
+                    Spacer()
+                    Text(updateStatusText)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .disabled(updateChecking)
+            if updateInfo != nil {
+                Button {
+                    openSideInstallerInstall()
+                } label: {
+                    HStack {
+                        LCSettingsIcon(systemName: "arrow.clockwise.circle", color: .green)
+                        Text("去 SideInstaller 更新")
+                    }
+                }
+                Button {
+                    openSealInstall()
+                } label: {
+                    HStack {
+                        LCSettingsIcon(systemName: "arrow.clockwise.circle", color: .green)
+                        Text("去 Seal 更新")
+                    }
+                }
+            }
+        } footer: {
+            Text("当前版本 \(currentAppVersion)")
+        }
+    }
+
     @ViewBuilder private var versionFooter: some View {
         VStack{
-            Text(LCUtils.getVersionInfo())
+            // 底部落款（用户定版）：不再显示版本号/分支/
+            // 提交号那一长串，只留「丶沐雨丿修改版」居中
+            // 一行；连点 5 下开开发者模式的手势保留在
+            // 文字上，别删。
+            Text("丶沐雨丿修改版")
                 .foregroundStyle(.gray)
+                .frame(maxWidth: .infinity, alignment: .center)
                 .onTapGesture(count: 5) {
                     sharedModel.developerMode = true
                 }
@@ -521,10 +631,6 @@ struct LCSettingsView: View {
     // 重装后用户不打开设置页、保活就一直没部署。
     // 设置页不再强制重签：走 forceSign: false + 按 Team 分键
     // 指纹表（见静态版注释），已验且队没换就跳过。
-    func syncKeepAliveTweak(enabled: Bool) {
-        Self.syncKeepAliveTweak(enabled: enabled, forceSign: false)
-    }
-
     static func syncKeepAliveTweak(enabled: Bool, forceSign: Bool) {
         let fm = FileManager.default
         guard let src = Bundle.main.url(forResource: "CZFKeepAlive", withExtension: "dylib") else { return }

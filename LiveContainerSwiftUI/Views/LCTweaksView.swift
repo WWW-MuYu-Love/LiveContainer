@@ -29,6 +29,15 @@ struct LCTweakFolderView : View {
     @State var tweakItems : [LCTweakItem]
     private var isRoot : Bool
     @EnvironmentObject private var sharedModel: SharedModel
+    @ObservedObject private var globalSearch = CZFSearchCenter.shared
+
+    // 全局搜索过滤（按文件名）：搜索没开或词为空时就是
+    // 全量；删除按显示列表换算（见 deleteTweakItem）。
+    private var displayedTweakItems: [LCTweakItem] {
+        let q = globalSearch.query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard globalSearch.isActive, !q.isEmpty else { return tweakItems }
+        return tweakItems.filter { $0.displayName.localizedCaseInsensitiveContains(q) }
+    }
     
     @State private var errorShow = false
     @State private var errorInfo = ""
@@ -119,7 +128,7 @@ struct LCTweakFolderView : View {
                 }
             }
             Section {
-                ForEach(tweakItems, id:\.self) { tweakItem in
+                ForEach(displayedTweakItems, id:\.self) { tweakItem in
                     HStack {
                         Group {
                             if tweakItem.isFolder && !tweakItem.isFramework {
@@ -322,13 +331,18 @@ struct LCTweakFolderView : View {
     }
 
     func deleteTweakItem(indexSet: IndexSet) {
+        // indexSet 是显示列表（可能被全局搜索过滤）的下标：
+        // 先换算成条目，再按身份回 tweakItems 取真下标，
+        // 直接拿去下标 tweakItems 在过滤时会删错文件。
+        let targets = indexSet.map { displayedTweakItems[$0] }
         var indexToRemove : [Int] = []
         let fm = FileManager()
         do {
-            for i in indexSet {
-                let tweakItem = tweakItems[i]
+            for tweakItem in targets {
                 try fm.removeItem(at: tweakItem.fileUrl)
-                indexToRemove.append(i)
+                if let idx = tweakItems.firstIndex(of: tweakItem) {
+                    indexToRemove.append(idx)
+                }
             }
         } catch {
             errorShow = true

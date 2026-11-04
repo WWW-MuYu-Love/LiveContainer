@@ -524,6 +524,8 @@ struct LCSourcesView: View {
     @State private var errorMessage: String?
     @State private var sourcePendingRemoval: AltStoreSourcesViewModel.SourceItem?
     @ObservedObject public var searchContext: SearchContext = SearchContext()
+    @ObservedObject private var globalSearch = CZFSearchCenter.shared
+    @Environment(\.czfInSearchTab) private var czfInSearchTab
     @State private var expandedSources: Set<URL> = []
     @State private var isManagingSources = false
     @State private var isBatchMode = false
@@ -703,7 +705,21 @@ struct LCSourcesView: View {
                 )
             }
         }
-        .searchable(text: $searchContext.query, placement: .navigationBarDrawer(displayMode: .always))
+        .czfSearchable(text: $searchContext.query, placement: .navigationBarDrawer(displayMode: .always), disabled: czfInSearchTab)
+        .onChange(of: globalSearch.query) { newValue in
+            // 全局搜索（底部搜索框）驱动本页：开着时把词
+            // 同步进本页的 searchContext，走现成过滤，
+            // 与 App 页同款，不另造一套。
+            if globalSearch.isActive {
+                searchContext.query = newValue
+            }
+        }
+        .onChange(of: globalSearch.isActive) { active in
+            // 取消全局搜索时把同步进来的词清掉，恢复全量
+            if !active {
+                searchContext.query = ""
+            }
+        }
 
         .onAppear {
             refreshUpdatableCache()

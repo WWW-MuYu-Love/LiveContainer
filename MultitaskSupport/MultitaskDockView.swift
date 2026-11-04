@@ -176,6 +176,10 @@ extension Notification.Name {
     private var czfCapAlertShowing = false
     private var czfPanelOverlayBackdrop: UIView?
     private var czfPanelOverlayHost: UIHostingController<AnyView>?
+    // App 面板卡片式（主窗悬浮卡）用的抓手条与底部留白：
+    // 呈现时按目标窗口写入，下滑关闭/互切动画据此算静止位。
+    private var czfPanelGrabber: UIView?
+    private var czfAppPanelBottomInset: CGFloat = 0
     // 源面板覆盖层：与 App 面板同构，各自一套遮罩+宿主，互开时先关对方
     private var czfSourcesOverlayBackdrop: UIView?
     private var czfSourcesOverlayHost: UIHostingController<AnyView>?
@@ -2024,6 +2028,16 @@ extension Notification.Name {
         host.view.clipsToBounds = true
         host.view.isHidden = true
         window.addSubview(host.view)
+        // 卡片式抓手条（顶中，与 sheet 的拖动指示器同位）：
+        // 默认藏，呈现时按形态点亮（czfApplyAppPanelStyle）。
+        let grabber = UIView()
+        grabber.backgroundColor = UIColor.label.withAlphaComponent(0.25)
+        grabber.layer.cornerRadius = 2.5
+        grabber.frame = CGRect(x: (b.width - 38) / 2, y: 8, width: 38, height: 5)
+        grabber.autoresizingMask = [.flexibleLeftMargin, .flexibleRightMargin]
+        grabber.isHidden = true
+        host.view.addSubview(grabber)
+        czfPanelGrabber = grabber
         // 下滑关闭：面板宿主挂拖动手势（只认顶部标题区起手，不抢
         // 列表滚动，起手判定在 gestureRecognizerShouldBegin）
         let drag = UIPanGestureRecognizer(target: self, action: #selector(self.czfPanelDragged(_:)))
@@ -2058,6 +2072,46 @@ extension Notification.Name {
         return hostingController?.view.window ?? keyWindow
     }
 
+    // 目标窗口是不是台前最大化游客的窗口（与 czfPanelTargetWindow
+    // 的游客分支同判据）：是就不套卡片式，保持旧抽屉，免得
+    // 卡片套进游客窗里缩成一团。
+    private func czfPanelIsGuestWindow(_ window: UIWindow) -> Bool {
+        guard let front = czfFrontmostApp(),
+              let view = front.view,
+              let vc = view._viewDelegate() as? DecoratedAppSceneViewController,
+              vc.isMaximized else { return false }
+        return view.window === window
+    }
+
+    // App 面板在目标窗口里的静止位/离屏位（用户定版：主窗里
+    // 改成与快捷栏 sheet 一模一样的悬浮卡片——左右各留 10、
+    // 底留 10、四角全圆 30、高 55%，顶部带抓手条；游客窗里
+    // 保持旧的贴底抽屉：满宽、只圆上两角、高 60%）。
+    private func czfAppPanelFrames(in window: UIWindow) -> (open: CGRect, offscreen: CGRect, card: Bool) {
+        let b = window.bounds
+        let card = !czfPanelIsGuestWindow(window)
+        let h = b.height * (card ? 0.55 : 0.6)
+        let side: CGFloat = card ? 10 : 0
+        let bottom: CGFloat = card ? 10 : 0
+        let width = b.width - side * 2
+        return (CGRect(x: side, y: b.height - bottom - h, width: width, height: h),
+                CGRect(x: side, y: b.height, width: width, height: h),
+                card)
+    }
+
+    // 按卡片/抽屉形态对齐 App 面板宿主的圆角与抓手条显隐，
+    // 并记下底部留白供下滑关闭与互切动画算静止位。
+    private func czfApplyAppPanelStyle(in window: UIWindow) {
+        guard let host = czfPanelOverlayHost else { return }
+        let frames = czfAppPanelFrames(in: window)
+        host.view.layer.cornerRadius = frames.card ? 30 : 20
+        host.view.layer.maskedCorners = frames.card
+            ? [.layerMinXMinYCorner, .layerMaxXMinYCorner, .layerMinXMaxYCorner, .layerMaxXMaxYCorner]
+            : [.layerMinXMinYCorner, .layerMaxXMinYCorner]
+        czfPanelGrabber?.isHidden = !frames.card
+        czfAppPanelBottomInset = frames.card ? 10 : 0
+    }
+
     private func presentAllAppsPanel() {
         DispatchQueue.main.async {
             guard let window = self.czfPanelTargetWindow else { return }
@@ -2075,16 +2129,19 @@ extension Notification.Name {
             window.bringSubviewToFront(backdrop)
             window.bringSubviewToFront(host.view)
             let b = window.bounds
-            let panelHeight = b.height * 0.6
+            // 形态按目标窗口定（主窗卡片式/游客窗抽屉式），
+            // 静止位与离屏位都走 czfAppPanelFrames 一处计算。
+            let frames = self.czfAppPanelFrames(in: window)
+            self.czfApplyAppPanelStyle(in: window)
             backdrop.frame = b
             backdrop.isHidden = false
             host.view.isHidden = false
-            if host.view.frame.height != panelHeight {
-                host.view.frame = CGRect(x: 0, y: b.height, width: b.width, height: panelHeight)
+            if host.view.frame.height != frames.open.height || host.view.frame.width != frames.open.width {
+                host.view.frame = frames.offscreen
             }
             UIView.animate(withDuration: 0.32, delay: 0, usingSpringWithDamping: 0.92, initialSpringVelocity: 0.6, options: [.curveEaseOut]) {
                 backdrop.alpha = 1
-                host.view.frame = CGRect(x: 0, y: b.height - panelHeight, width: b.width, height: panelHeight)
+                host.view.frame = frames.open
             }
         }
     }
@@ -2124,7 +2181,8 @@ extension Notification.Name {
         let isSources = hostView === czfSourcesOverlayHost?.view
         let backdrop = isSources ? czfSourcesOverlayBackdrop : czfPanelOverlayBackdrop
         let panelHeight = hostView.frame.height
-        let openY = container.bounds.height - panelHeight
+        // App 面板卡片式时静止位还要扣掉底部留白（呈现时记的）
+        let openY = container.bounds.height - panelHeight - (isSources ? 0 : czfAppPanelBottomInset)
         switch gesture.state {
         case .changed:
             let dy = max(0, gesture.translation(in: container).y)
@@ -2155,10 +2213,12 @@ extension Notification.Name {
     // 都会走到这里。
     private func dismissPanelOverlay() {
         guard let host = czfPanelOverlayHost, let backdrop = czfPanelOverlayBackdrop, !host.view.isHidden else { return }
-        let height = host.view.frame.height
+        // 滑到容器底边之外：卡片式静止位离底边还差一个留白，
+        // 只按高度偏移会露出一条边，必须滑到 superview 底。
+        let targetY = host.view.superview?.bounds.height ?? host.view.frame.origin.y + host.view.frame.height + 16
         UIView.animate(withDuration: 0.25, delay: 0, options: [.curveEaseIn], animations: {
             backdrop.alpha = 0
-            host.view.frame = host.view.frame.offsetBy(dx: 0, dy: height)
+            host.view.frame.origin.y = targetY
         }, completion: { _ in
             backdrop.isHidden = true
             host.view.isHidden = true
@@ -2270,6 +2330,7 @@ extension Notification.Name {
                 self.czfSourcesPanelOpenCounter += 1
             } else {
                 self.czfAppPanelOpenCounter += 1
+                self.czfApplyAppPanelStyle(in: window)
             }
             window.bringSubviewToFront(newBackdrop)
             window.bringSubviewToFront(newHost.view)
@@ -2277,13 +2338,22 @@ extension Notification.Name {
             newBackdrop.isHidden = false
             newBackdrop.alpha = 1
             newHost.view.isHidden = false
-            if newHost.view.frame.height != panelHeight {
-                newHost.view.frame = CGRect(x: 0, y: b.height, width: b.width, height: panelHeight)
+            // 新面板的静止位：源面板仍是贴底抽屉；App 面板走
+            // czfAppPanelFrames（主窗卡片式/游客窗抽屉式）。
+            let appFrames = self.czfAppPanelFrames(in: window)
+            let newOpenFrame = toSources
+                ? CGRect(x: 0, y: b.height - panelHeight, width: b.width, height: panelHeight)
+                : appFrames.open
+            if newHost.view.frame.height != newOpenFrame.height || newHost.view.frame.width != newOpenFrame.width {
+                newHost.view.frame = CGRect(x: newOpenFrame.origin.x, y: b.height, width: newOpenFrame.width, height: newOpenFrame.height)
             }
             let oldHeight = oldHost.view.frame.height
+            // 旧面板滑出：App 面板卡片式时多滑一个底部留白，
+            // 不然动画途中会露出一条边（终点在屏外即可）。
+            let oldOffset = oldHeight + (toSources ? self.czfAppPanelBottomInset : 0)
             UIView.animate(withDuration: 0.3, delay: 0, usingSpringWithDamping: 0.92, initialSpringVelocity: 0.6, options: [.curveEaseOut]) {
-                oldHost.view.frame = oldHost.view.frame.offsetBy(dx: 0, dy: oldHeight)
-                newHost.view.frame = CGRect(x: 0, y: b.height - panelHeight, width: b.width, height: panelHeight)
+                oldHost.view.frame = oldHost.view.frame.offsetBy(dx: 0, dy: oldOffset)
+                newHost.view.frame = newOpenFrame
             } completion: { _ in
                 oldBackdrop.isHidden = true
                 oldHost.view.isHidden = true
@@ -3207,10 +3277,21 @@ struct AllAppsListView: View {
     
     private func minimizeOpenApp(_ app: LCAppModel) {
         guard let dataUUID = app.appInfo.dataUUID else { return }
-        // 如果已在运行，直接最小化它的窗口；归属不明按启动/
-        // 小窗口路同款视为别的条目（?? true），不再直接最小化。
+        // 如果已在运行，直接最小化它的窗口。归属先验相对
+        // 路径；条目 appInfo 按存盘 bundlePath 重建时没有
+        // relativeBundlePath，路径验不了，原来一律当别人的
+        // （?? true）落到启动分支，点最小化等于点启动——与
+        // 主列表卡片同款毛病、同款修法：路径缺失时用
+        // bundleId 兜底验，对不上才是别的 App 占着。
         if let runningApp = dockManager.apps.first(where: { $0.appUUID == dataUUID }) {
-            let belongsToOther = runningApp.appInfo?.relativeBundlePath.map { !$0.isEmpty && $0 != app.appInfo.relativeBundlePath } ?? true
+            let belongsToOther: Bool
+            if let runningPath = runningApp.appInfo?.relativeBundlePath, !runningPath.isEmpty {
+                belongsToOther = runningPath != app.appInfo.relativeBundlePath
+            } else if let runningInfo = runningApp.appInfo {
+                belongsToOther = runningInfo.bundleIdentifier() != app.appInfo.bundleIdentifier()
+            } else {
+                belongsToOther = true
+            }
             if !belongsToOther {
                 dockManager.minimizeWindow(uuid: runningApp.appUUID)
                 closePanel()
@@ -3233,11 +3314,21 @@ struct AllAppsListView: View {
         // 的条目，别人的窗口占着 uuid 时直接停表、不碰它（自己
         // 的新窗若拆容器会换 uuid，等这个 uuid 也等不来）。
         // 轮询到期分不清失败还是拆容器换号，不在这里误报错。
+        // 归属验法与上面已运行分支同款：路径优先，路径缺失
+        // 用 bundleId 兜底。
+        let expectedBundleId = app.appInfo.bundleIdentifier()
         var attempts = 0
         Timer.scheduledTimer(withTimeInterval: 0.3, repeats: true) { timer in
             attempts += 1
             if let entry = self.dockManager.apps.first(where: { $0.appUUID == dataUUID }) {
-                let owned = entry.appInfo?.relativeBundlePath.map { !$0.isEmpty && $0 == app.appInfo.relativeBundlePath } ?? false
+                let owned: Bool
+                if let entryPath = entry.appInfo?.relativeBundlePath, !entryPath.isEmpty {
+                    owned = entryPath == app.appInfo.relativeBundlePath
+                } else if let entryInfo = entry.appInfo {
+                    owned = entryInfo.bundleIdentifier() == expectedBundleId
+                } else {
+                    owned = false
+                }
                 if owned {
                     self.dockManager.minimizeWindow(uuid: dataUUID)
                 }
