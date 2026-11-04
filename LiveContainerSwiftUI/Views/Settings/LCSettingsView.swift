@@ -439,37 +439,42 @@ struct LCSettingsView: View {
         }
     }
 
-    private func openSideInstallerInstall() {
+    // 更新安装跳转：App 自己不下载/安装，只把 update 包的
+    // 直链拼成 <scheme>://install?url= 交给对应的安装器，
+    // 由它下载并签名安装；打开失败（没装那个应用）就弹错。
+    // 四个入口（用户定版顺序）：Seal / Sidekite /
+    // Sidestore / SideInstaller（保留、排最后）。
+    private func openInstall(scheme: String, appName: String) {
         guard let info = updateInfo else { return }
         var components = URLComponents()
-        components.scheme = "sideinstaller"
+        components.scheme = scheme
         components.host = "install"
         components.queryItems = [URLQueryItem(name: "url", value: info.downloadURL.absoluteString)]
         guard let url = components.url else { return }
         UIApplication.shared.open(url, options: [:]) { success in
             if !success {
-                errorInfo = "没能打开 SideInstaller 🅥，请确认它已安装"
+                errorInfo = "没能打开 \(appName)，请确认它已安装"
                 errorShow = true
             }
         }
     }
 
-    // 去 Seal 更新：照抄 openSideInstallerInstall，只换 scheme。
     // Seal 注册了 seal 和 sidestore 两个 scheme，用户定用
     // sidestore://install?url= 这个格式，不要自创 seal://。
     private func openSealInstall() {
-        guard let info = updateInfo else { return }
-        var components = URLComponents()
-        components.scheme = "sidestore"
-        components.host = "install"
-        components.queryItems = [URLQueryItem(name: "url", value: info.downloadURL.absoluteString)]
-        guard let url = components.url else { return }
-        UIApplication.shared.open(url, options: [:]) { success in
-            if !success {
-                errorInfo = "没能打开 Seal，请确认它已安装"
-                errorShow = true
-            }
-        }
+        openInstall(scheme: "sidestore", appName: "Seal")
+    }
+
+    private func openSidekiteInstall() {
+        openInstall(scheme: "sidekite", appName: "Sidekite")
+    }
+
+    private func openSidestoreInstall() {
+        openInstall(scheme: "sidestore", appName: "Sidestore")
+    }
+
+    private func openSideInstallerInstall() {
+        openInstall(scheme: "sideinstaller", appName: "SideInstaller")
     }
 
     @ViewBuilder private var updateSection: some View {
@@ -491,19 +496,35 @@ struct LCSettingsView: View {
             .disabled(updateChecking)
             if updateInfo != nil {
                 Button {
-                    openSideInstallerInstall()
-                } label: {
-                    HStack {
-                        LCSettingsIcon(systemName: "arrow.clockwise.circle", color: .green)
-                        Text("去 SideInstaller 更新")
-                    }
-                }
-                Button {
                     openSealInstall()
                 } label: {
                     HStack {
                         LCSettingsIcon(systemName: "arrow.clockwise.circle", color: .green)
-                        Text("去 Seal 更新")
+                        Text("使用Seal更新")
+                    }
+                }
+                Button {
+                    openSidekiteInstall()
+                } label: {
+                    HStack {
+                        LCSettingsIcon(systemName: "arrow.clockwise.circle", color: .green)
+                        Text("使用Sidekite更新")
+                    }
+                }
+                Button {
+                    openSidestoreInstall()
+                } label: {
+                    HStack {
+                        LCSettingsIcon(systemName: "arrow.clockwise.circle", color: .green)
+                        Text("使用Sidestore更新")
+                    }
+                }
+                Button {
+                    openSideInstallerInstall()
+                } label: {
+                    HStack {
+                        LCSettingsIcon(systemName: "arrow.clockwise.circle", color: .green)
+                        Text("使用SideInstaller更新")
                     }
                 }
             }
