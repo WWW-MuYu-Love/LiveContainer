@@ -3124,10 +3124,13 @@ struct PinnedAppsStripView: View {
     }
 }
 
-@available(iOS 16.0, *)
 // List 背景透明化（iOS 16+）：scrollContentBackground 是
 // 16 起的 API，部署目标 15 起，低版本保持列表自带底色
 // （面板本身是 16+ 多任务特性，15 上差异仅底色一项）。
+// 注意：@available 必须紧贴它修饰的声明——2026-11-06
+// 构建 #16 失败就是它被插在 AllAppsListView 的注解与
+// 声明之间，把注解“偷”走了（见 AllAppsListView 处）。
+@available(iOS 16.0, *)
 private struct CZFListBackdropHidden: ViewModifier {
     func body(content: Content) -> some View {
         if #available(iOS 16.0, *) {
@@ -3138,6 +3141,7 @@ private struct CZFListBackdropHidden: ViewModifier {
     }
 }
 
+@available(iOS 16.0, *)
 struct AllAppsListView: View {
     @Environment(\.dismiss) var dismiss
     @Environment(\.czfPanelClose) private var czfPanelClose
@@ -3665,6 +3669,11 @@ struct SourcesPanelView: View {
             }
             .listStyle(.insetGrouped)
             }
+            }
+            // 标题/工具栏/回顶/提示挂在 VStack 上：原来挂在
+            // if/else 语句后面，构建 #16 报 navigationTitle
+            // 与 toolbar 找不到（if/else 的结果不是可修饰的
+            // 具体视图，3.8.12 时修饰的是 ScrollView 本身）。
             .navigationTitle("源")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -3695,7 +3704,6 @@ struct SourcesPanelView: View {
                 Button("好") { errorMessage = nil }
             } message: {
                 Text(errorMessage ?? "")
-            }
             }
             }
         }
@@ -3997,6 +4005,9 @@ private func czfBannerReadableTextColor(for color: UIColor) -> UIColor {
     return UIColor(red: min(max(r + offset, 0), 1), green: min(max(g + offset, 0), 1), blue: min(max(b + offset, 0), 1), alpha: 1)
 }
 
+// AppCardRow 用到 MultitaskDockManager 等 iOS 16+ 类型，
+// 本轮新建时漏了注解，构建 #16 在此报了两处错，补上。
+@available(iOS 16.0, *)
 struct AppCardRow: View {
     @ObservedObject var app: LCAppModel
     let dockManager: MultitaskDockManager
