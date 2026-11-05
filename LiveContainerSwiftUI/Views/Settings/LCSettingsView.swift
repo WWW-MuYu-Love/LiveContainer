@@ -60,6 +60,11 @@ struct LCSettingsView: View {
     @State private var updateChecking = false
     @State private var updateInfo: CZFUpdateInfo?
 
+    // 本地交接进行中的安装器名（先自下载更新包再喂给它）：
+    // Seal / Sidekite 共用一把闸（本机服务是单例，一次只
+    // 供一份包），非空时两个按钮一起禁用。
+    @State private var handoffBusyApp: String?
+
     // 本页搜索词：页面自己的系统搜索框写它。
     @State private var searchText = ""
 
@@ -466,11 +471,13 @@ struct LCSettingsView: View {
         }
     }
 
-    // 更新安装跳转：App 自己不下载/安装，只把 update 包的
-    // 直链拼成 <scheme>://install?url= 交给对应的安装器，
-    // 由它下载并签名安装；打开失败（没装那个应用）就弹错。
-    // 四个入口（用户定版顺序）：Seal / Sidekite /
-    // Sidestore / SideInstaller（保留、排最后）。
+    // 更新安装跳转：把 update 包拼成 <scheme>://install?
+    // url= 交给对应的安装器，由它签名安装；打开失败（没装
+    // 那个应用）就弹错。三个入口（用户定版顺序）：Seal /
+    // Sidekite / SideInstaller（保留、排最后）；SideStore
+    // 按钮已按 Campbell 2026-11-06 令删除。其中 Seal 与
+    // Sidekite 走本地交接（startLocalHandoff：本 App 先下
+    // 载再喂本机地址），SideInstaller 仍是直链交接。
     private func openInstall(scheme: String, appName: String) {
         guard let info = updateInfo else { return }
         var components = URLComponents()
@@ -486,18 +493,61 @@ struct LCSettingsView: View {
         }
     }
 
-    // Seal 注册了 seal 和 sidestore 两个 scheme，用户定用
-    // sidestore://install?url= 这个格式，不要自创 seal://。
-    private func openSealInstall() {
-        openInstall(scheme: "sidestore", appName: "Seal")
-    }
-
-    private func openSidekiteInstall() {
-        openInstall(scheme: "sidekite", appName: "Sidekite")
-    }
-
-    private func openSidestoreInstall() {
-        openInstall(scheme: "sidestore", appName: "Sidestore")
+    // 注：Seal 注册了 seal 和 sidestore 两个 scheme，用户
+    // 定用 sidestore（不要自创 seal://），所以下面 Seal 的
+    // 交接 scheme 传的也是 "sidestore"。
+    // 更新本地交接（Campbell 2026-11-06 先点名 Sidekite、
+    // 随后 Seal 也改）：先由 LiveContainer 自己把更新包下
+    // 载到本地，再起本机服务把包直接喂给安装器（<scheme>:
+    // //install?url= 本机回环地址），全程不弹分享表、也不
+    // 让安装器再去直连 GitHub 下（Sidekite 那边下 GitHub
+    // 曾超时失败）。下载或起服务失败就退回原来的直链交接
+    // （openInstall 原路），并把退回这件事弹出来说明，不
+    // 静默换路。本机服务是单例，一次只供一份包，两钮共闸。
+    private func startLocalHandoff(scheme: String, appName: String) {
+        guard let info = updateInfo, handoffBusyApp == nil else { return }
+        handoffBusyApp = appName
+        Task {
+            do {
+                let (tmpURL, response) = try await URLSession.shared.download(from: info.downloadURL)
+                if let http = response as? HTTPURLResponse, http.statusCode != 200 {
+                    throw NSError(domain: "CZFUpdateHandoff", code: http.statusCode, userInfo: [NSLocalizedDescriptionKey: "更新包下载失败（HTTP \(http.statusCode)）"])
+                }
+                let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+                let dir = caches.appendingPathComponent("CZFUpdateHandoff", isDirectory: true)
+                try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+                let fileName = info.downloadURL.lastPathComponent.isEmpty ? "LiveContainer.ipa" : info.downloadURL.lastPathComponent
+                let dest = dir.appendingPathComponent(fileName)
+                try? FileManager.default.removeItem(at: dest)
+                try FileManager.default.moveItem(at: tmpURL, to: dest)
+                let localURL = try await CZFLocalIPAServer.shared.start(fileURL: dest)
+                await MainActor.run {
+                    handoffBusyApp = nil
+                    var components = URLComponents()
+                    components.scheme = scheme
+                    components.host = "install"
+                    components.queryItems = [URLQueryItem(name: "url", value: localURL.absoluteString)]
+                    guard let url = components.url else {
+                        CZFLocalIPAServer.shared.stop()
+                        return
+                    }
+                    UIApplication.shared.open(url, options: [:]) { success in
+                        if !success {
+                            CZFLocalIPAServer.shared.stop()
+                            errorInfo = "没能打开 \(appName)，请确认它已安装"
+                            errorShow = true
+                        }
+                    }
+                }
+            } catch {
+                await MainActor.run {
+                    handoffBusyApp = nil
+                    openInstall(scheme: scheme, appName: appName)
+                    errorInfo = "更新包本地交接没成（\(error.localizedDescription)），已改用直链交给 \(appName)、由它自己下载"
+                    errorShow = true
+                }
+            }
+        }
     }
 
     private func openSideInstallerInstall() {
@@ -523,29 +573,23 @@ struct LCSettingsView: View {
             .disabled(updateChecking)
             if updateInfo != nil {
                 Button {
-                    openSealInstall()
+                    startLocalHandoff(scheme: "sidestore", appName: "Seal")
                 } label: {
                     HStack {
                         LCSettingsIcon(systemName: "arrow.clockwise.circle", color: .green)
-                        Text("使用Seal更新")
+                        Text(handoffBusyApp == "Seal" ? "正在下载更新包…" : "使用Seal更新")
                     }
                 }
+                .disabled(handoffBusyApp != nil)
                 Button {
-                    openSidekiteInstall()
+                    startLocalHandoff(scheme: "sidekite", appName: "Sidekite")
                 } label: {
                     HStack {
                         LCSettingsIcon(systemName: "arrow.clockwise.circle", color: .green)
-                        Text("使用Sidekite更新")
+                        Text(handoffBusyApp == "Sidekite" ? "正在下载更新包…" : "使用Sidekite更新")
                     }
                 }
-                Button {
-                    openSidestoreInstall()
-                } label: {
-                    HStack {
-                        LCSettingsIcon(systemName: "arrow.clockwise.circle", color: .green)
-                        Text("使用Sidestore更新")
-                    }
-                }
+                .disabled(handoffBusyApp != nil)
                 Button {
                     openSideInstallerInstall()
                 } label: {

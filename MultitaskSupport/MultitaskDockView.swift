@@ -1358,6 +1358,8 @@ extension Notification.Name {
                let vc = app.view?._viewDelegate() as? DecoratedAppSceneViewController,
                vc.isMaximized {
                 vc.maximizeWindow()
+                // 小窗口打开默认不收快捷栏（见 czfExpandDockIfCollapsed）
+                self.czfExpandDockIfCollapsed()
             }
         }
     }
@@ -1377,6 +1379,20 @@ extension Notification.Name {
             self.isCollapsed.toggle()
             self.updateDockFrame()
             self.notifyDockCollapseChanged()
+        }
+    }
+
+    // 小窗口打开专用：把快捷栏展开（Campbell 2026-11-06）。
+    // 与窗口侧 czfAutoCollapseDockIfNeeded 成对：全屏（最大
+    // 化）打开默认收起走那边；小窗口打开默认不收——新窗口
+    // 按默认最大化落地时先被自动收起，随后小窗口路把它还
+    // 原成小窗，若不展开，结束状态是「小窗口 + 快捷栏收
+    // 着」。只在确实收着时拨一次展开；全屏打开不经小窗
+    // 口路，不受影响；标题栏按钮手动最大化/还原也不经
+    // 这里，行为不变。
+    @objc public func czfExpandDockIfCollapsed() {
+        if isCollapsed {
+            toggleDockCollapse()
         }
     }
     
@@ -3149,6 +3165,22 @@ private struct CZFListBackdropHidden: ViewModifier {
     }
 }
 
+// 分组列表段间距压到 0（iOS 17+）：insetGrouped 的 Section
+// 即使没有段头，系统也留一截段头间距，面板里第一张卡上方
+// 就空出一条大空白（Campbell 2026-11-06 真机点名）。struct
+// 本身只标 16（与 CZFListBackdropHidden 同款），17 的 API
+// 在 body 内再判一次，16 上保持系统间距。
+@available(iOS 16.0, *)
+private struct CZFListSectionSpacingZero: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(iOS 17.0, *) {
+            content.listSectionSpacing(0)
+        } else {
+            content
+        }
+    }
+}
+
 @available(iOS 16.0, *)
 struct AllAppsListView: View {
     @Environment(\.dismiss) var dismiss
@@ -3176,6 +3208,28 @@ struct AllAppsListView: View {
 
     private func reportLaunchError(_ message: String) {
         launchError = message
+    }
+
+    // 面板动作防双发（Campbell 2026-11-06 真机点名）：卡面
+    // 按钮点一次，List 行的按钮投递会连带把另一条启动路也
+    // 触发，同一个 App 亚秒内被起两次，窗口直接「App 已被
+    // 终止」；滑动触发则正常。卡面按钮已改点按手势（见
+    // AppCardRow），这里再加一道闸：同一 App 0.5 秒内只认
+    // 第一个动作（启动/最小化/小窗口共用一把闸），双发的
+    // 第二个直接丢弃。面板在第一个动作后就关闭，正常连点
+    // 本就到不了第二下，不误伤。
+    @State private var lastPanelActionKey: String?
+    @State private var lastPanelActionAt = Date.distantPast
+
+    private func claimPanelAction(_ app: LCAppModel) -> Bool {
+        let key = app.appInfo.dataUUID ?? app.appInfo.bundleIdentifier() ?? ""
+        let now = Date()
+        if key == lastPanelActionKey, now.timeIntervalSince(lastPanelActionAt) < 0.5 {
+            return false
+        }
+        lastPanelActionKey = key
+        lastPanelActionAt = now
+        return true
     }
 
     // 面板搜索：不用 .searchable（原来绑常量空串根本不筛选，
@@ -3237,6 +3291,11 @@ struct AllAppsListView: View {
             // 角，行底透明、无分隔线；行距上下各 5 凑出原
             // 卡片间 10 的间距，左右 16 与固定区、运行条同
             // 线；顶部留一个 0 高锚点行供调出时滚回最顶部。
+            // 锚点行真 0 高要靠下面 List 上的
+            // defaultMinListRowHeight=0：List 行有系统默认
+            // 最小行高（44），不压掉它，锚点行就占 44 高，
+            // 第一张卡上方空出一大条（Campbell 2026-11-06
+            // 真机点名）。卡片行内容本身远高于 44，不受影响。
             List {
                 Color.clear
                     .frame(height: 0)
@@ -3246,11 +3305,11 @@ struct AllAppsListView: View {
                     .id("czfAppPanelTop")
                 ForEach(filteredPanelApps, id: \.self) { app in
                     AppCardRow(app: app, dockManager: dockManager, onLaunch: {
-                        launchApp(app)
+                        if claimPanelAction(app) { launchApp(app) }
                     }, onMinimizeOpen: {
-                        minimizeOpenApp(app)
+                        if claimPanelAction(app) { minimizeOpenApp(app) }
                     }, onSmallWindowOpen: {
-                        smallWindowOpenApp(app)
+                        if claimPanelAction(app) { smallWindowOpenApp(app) }
                     })
                     .listRowInsets(EdgeInsets(top: 5, leading: 16, bottom: 5, trailing: 16))
                     .listRowSeparator(.hidden)
@@ -3258,6 +3317,7 @@ struct AllAppsListView: View {
                 }
             }
             .listStyle(.plain)
+            .environment(\.defaultMinListRowHeight, 0)
             .modifier(CZFListBackdropHidden())
             .onChange(of: dockManager.czfAppPanelOpenCounter) { _ in
                 // 每次调出回到初始状态：滚回最顶部（用户定，
@@ -3517,6 +3577,10 @@ struct AllAppsListView: View {
               let vc = runningApp.view?._viewDelegate() as? DecoratedAppSceneViewController,
               vc.isMaximized else { return }
         vc.maximizeWindow()
+        // 小窗口打开默认不收快捷栏（Campbell 2026-11-06）：
+        // 窗口落地最大化时被自动收起的那次，在这里还原成
+        // 小窗后展开回来；全屏打开不经此路，仍默认收起。
+        dockManager.czfExpandDockIfCollapsed()
     }
 
     // 小窗口回落路专用（3.8.239）：见卡片同款 helper 注释。
@@ -3681,6 +3745,10 @@ struct SourcesPanelView: View {
             // 面，卡片浮在半透明底上（App 面板一直如此，源
             // 面板此前是整块实色分组底，没有玻璃感）。
             .modifier(CZFListBackdropHidden())
+            // 段间距压 0：无段头的 Section 系统也留段头间距，
+            // 第一张卡上方空出一大条（Campbell 2026-11-06
+            // 真机点名，与 App 面板的锚点行最小行高同批修）。
+            .modifier(CZFListSectionSpacingZero())
             }
             }
             // 标题/工具栏/回顶/提示挂在 VStack 上：原来挂在
@@ -4119,43 +4187,50 @@ struct AppCardRow: View {
             Spacer()
 
             // 次级动作统一中性灰胶囊（原来蓝/紫糖果色三件套太花，
-            // 用户点名丑）；只有主动作「打开/启动」保留实心蓝
-            Button(action: onMinimizeOpen) {
-                Text("最小化")
-                    .font(.footnote)
-                    .foregroundColor(.primary)
-                    .lineLimit(1)
-                    .fixedSize(horizontal: true, vertical: false)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 7)
-                    .background(Color(.systemGray5))
-                    .clipShape(Capsule())
-            }
+            // 用户点名丑）；只有主动作「打开/启动」保留实心色。
+            // 三颗都不再用 Button（Campbell 2026-11-06 真机点
+            // 名）：List 行里嵌 Button 又同行挂着滑动动作和长
+            // 按菜单时，点按钮会连带触发另一条启动路，同一个
+            // App 亚秒内被起两次、窗口直接「App 已被终止」
+            // （滑动的小窗口不经按钮投递，所以正常）。改成
+            // 胶囊视图 + 点按手势，样式一字不变；外层再有
+            // AllAppsListView 的防双发闸兜底。App 页卡片是
+            // UIKit 按钮，不受此问题影响，不动。
+            Text("最小化")
+                .font(.footnote)
+                .foregroundColor(.primary)
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 7)
+                .background(Color(.systemGray5))
+                .clipShape(Capsule())
+                .contentShape(Capsule())
+                .onTapGesture { onMinimizeOpen() }
 
-            Button(action: onSmallWindowOpen) {
-                Text("小窗口")
-                    .font(.footnote)
-                    .foregroundColor(.primary)
-                    .lineLimit(1)
-                    .fixedSize(horizontal: true, vertical: false)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 7)
-                    .background(Color(.systemGray5))
-                    .clipShape(Capsule())
-            }
+            Text("小窗口")
+                .font(.footnote)
+                .foregroundColor(.primary)
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 7)
+                .background(Color(.systemGray5))
+                .clipShape(Capsule())
+                .contentShape(Capsule())
+                .onTapGesture { onSmallWindowOpen() }
 
-            // Launch button
-            Button(action: onLaunch) {
-                Text(dockManager.apps.contains(where: { $0.appUUID == app.appInfo.dataUUID }) ? "打开" : "启动")
-                    .font(.footnote.weight(.semibold))
-                    .foregroundColor(.white)
-                    .lineLimit(1)
-                    .fixedSize(horizontal: true, vertical: false)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 7)
-                    .background(Color(accentUIColor))
-                    .clipShape(Capsule())
-            }
+            Text(dockManager.apps.contains(where: { $0.appUUID == app.appInfo.dataUUID }) ? "打开" : "启动")
+                .font(.footnote.weight(.semibold))
+                .foregroundColor(.white)
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 7)
+                .background(Color(accentUIColor))
+                .clipShape(Capsule())
+                .contentShape(Capsule())
+                .onTapGesture { onLaunch() }
         }
         .padding(10)
         .background(cardBackground)

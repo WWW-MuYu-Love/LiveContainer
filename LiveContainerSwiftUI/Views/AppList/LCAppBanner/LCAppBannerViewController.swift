@@ -422,6 +422,10 @@ final class LCAppBannerViewController: UIViewController, UIContextMenuInteractio
               let vc = runningApp.view?._viewDelegate() as? DecoratedAppSceneViewController,
               vc.isMaximized else { return }
         vc.maximizeWindow()
+        // 小窗口打开默认不收快捷栏（Campbell 2026-11-06，与
+        // 面板同款）：还原成小窗后把落地最大化时自动收起的
+        // 快捷栏展开回来；全屏打开不经此路，仍默认收起。
+        MultitaskDockManager.shared.czfExpandDockIfCollapsed()
     }
 
     // 小窗口回落路专用（3.8.239）：czfOnWindowAppeared 是“同 uuid
