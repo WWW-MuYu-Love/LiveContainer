@@ -3181,6 +3181,19 @@ private struct CZFListSectionSpacingZero: ViewModifier {
     }
 }
 
+// 列表滚动内容顶部边距压到 0（iOS 17+）：insetGrouped 列表
+// 自带一截顶部内容边距，与段间距是两笔账，分开压。
+@available(iOS 16.0, *)
+private struct CZFListTopMarginZero: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(iOS 17.0, *) {
+            content.contentMargins(.top, 0, for: .scrollContent)
+        } else {
+            content
+        }
+    }
+}
+
 @available(iOS 16.0, *)
 struct AllAppsListView: View {
     @Environment(\.dismiss) var dismiss
@@ -3652,9 +3665,35 @@ struct SourcesPanelView: View {
     }
 
     var body: some View {
-        NavigationView {
-            ScrollViewReader { proxy in
+        ScrollViewReader { proxy in
             VStack(spacing: 0) {
+                // 标题行手写（原来是 NavigationView 的导航栏）：
+                // 导航栏会给 VStack 里的 List 强加一个导航栏高
+                // 度的顶部内边距，第一张卡上方空出约 64pt
+                // （Campbell 2026-11-06 装 3.8.15 后仍点名）；
+                // App 面板一直没有导航栏、从来没这毛病，源
+                // 面板照改：去掉 NavigationView，标题/关闭/
+                // 刷新用 ZStack 手写一行（标题绝对居中）。
+                ZStack {
+                    Text("源")
+                        .font(.headline)
+                    HStack {
+                        Button { closePanel() } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .font(.title3)
+                                .foregroundColor(.secondary)
+                        }
+                        Spacer()
+                        Button {
+                            Task { await viewModel.refreshAllSources() }
+                        } label: {
+                            Image(systemName: "arrow.clockwise")
+                        }
+                    }
+                }
+                .padding(.horizontal, 16)
+                .padding(.top, 16)
+                .padding(.bottom, 2)
                 // 状态栏条固定在顶部，不随列表滚动（与 App 面板一致）
                 RunningAppsStripView { closePanel() }
                     .padding(.horizontal)
@@ -3749,30 +3788,18 @@ struct SourcesPanelView: View {
             // 第一张卡上方空出一大条（Campbell 2026-11-06
             // 真机点名，与 App 面板的锚点行最小行高同批修）。
             .modifier(CZFListSectionSpacingZero())
+            // 顶部内容边距也压 0、行最小高也归 0：与段间距
+            // 是两笔账，三笔一起清（3.8.15 只压段间距没压
+            // 干净，装机后仍剩约 64pt，主因是导航栏内边距，
+            // 已随标题行手写一并去掉，这里补齐列表自身这笔）
+            .modifier(CZFListTopMarginZero())
+            .environment(\.defaultMinListRowHeight, 0)
             }
             }
-            // 标题/工具栏/回顶/提示挂在 VStack 上：原来挂在
-            // if/else 语句后面，构建 #16 报 navigationTitle
-            // 与 toolbar 找不到（if/else 的结果不是可修饰的
-            // 具体视图，3.8.12 时修饰的是 ScrollView 本身）。
-            .navigationTitle("源")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button { closePanel() } label: {
-                        Image(systemName: "xmark.circle.fill")
-                            .font(.title3)
-                            .foregroundColor(.secondary)
-                    }
-                }
-                ToolbarItem(placement: .primaryAction) {
-                    Button {
-                        Task { await viewModel.refreshAllSources() }
-                    } label: {
-                        Image(systemName: "arrow.clockwise")
-                    }
-                }
-            }
+            // 回顶/提示等修饰挂在 VStack 上：挂在 if/else 语
+            // 句后面构建 #16 报过找不到（if/else 的结果不是
+            // 可修饰的具体视图）。标题行已手写（见 VStack
+            // 第一行），这里不再有 navigationTitle/toolbar。
             .onChange(of: dockManager.czfSourcesPanelOpenCounter) { _ in
                 // 每次调出回到初始状态：滚回最顶部（用户定，
                 // 不留上次滑动的位置）+ 刷新源数据 + 清空搜索
@@ -3787,7 +3814,6 @@ struct SourcesPanelView: View {
                 Text(errorMessage ?? "")
             }
             }
-        }
     }
 
     // 与源页 LCSourcesView.install 一致，额外关掉面板让用户看安装进度
