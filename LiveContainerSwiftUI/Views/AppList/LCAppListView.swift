@@ -374,12 +374,13 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
                 }
                 ToolbarItem(placement: .topBarLeading) {
                     if(UserDefaults.sideStoreExist()) {
+                        // 图标与单文件版统一（用户定）：不再用内置
+                        // SideStore 的应用图标，改用同款 signature
+                        // 图标；点击行为不变，仍是打开内置 SideStore。
                         Button {
                             LCUtils.openSideStore(delegate: self)
                         } label: {
-                            IconImageView(icon: BuiltInSideStoreAppInfo.shared.iconIsDarkIcon(darkModeIcon))
-                                .frame(width: UIFont.preferredFont(forTextStyle: .body).lineHeight, height: UIFont.preferredFont(forTextStyle: .body).lineHeight)
-
+                            Label("SideStore", systemImage: "signature")
                         }
                     } else {
                         // 单文件版（无内置 SideStore）：原「?」帮助按钮换成
@@ -695,6 +696,7 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
             }
         }
         .czfSearchable(text: $searchContext.query, placement: .automatic, disabled: czfOwnSearchDisabled)
+        .czfPullToSearch()
         .onChange(of: globalSearch.query) { newValue in
             // 全局搜索的词无条件同步进本页 searchContext，
             // 走现成过滤/防抖：全局词只由搜索框产生（进搜

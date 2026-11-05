@@ -2,9 +2,9 @@
 //  LCVPNView.swift
 //  LiveContainerSwiftUI
 //
-//  代理设置页：曾是独立 VPN 标签页，用户定版撤标签、
-//  改回设置页子页（入口在设置主页、应用设置下方）并
-//  改名「代理设置」。节点区按小火箭式分组：本地组（手
+//  「代理」独立标签页（在设置左手边）：曾撤进设置页
+//  做子页「代理设置」，用户定版又搬回底部标签栏并改
+//  名「代理」、恢复自带导航栈。节点区按小火箭式分组：本地组（手
 //  填/单个导入）+ 每订阅一组（可折叠、组头带流量/到期、
 //  可单独刷新/删组），导入订阅新建组、不再整体替换。
 //  顶部状态卡 + 核心起停/测速/核心选项逻辑原样保留。
@@ -90,15 +90,21 @@ struct LCVPNView: View {
     }
 
     var body: some View {
-        // 已从独立标签页改成设置页子页（用户定版）：不再
-        // 自带 NavigationView，借设置页的导航栈推进来，
-        // 标题改名「代理设置」；下面的确认框/提示框原样
-        // 挂在 Form 上，行为不变。
+        // 独立标签页「代理」（用户定版）：自带导航栈，
+        // 不再借设置页推进；下面的 Form 与确认框/提示框
+        // 原样，行为不变。
+        NavigationView {
+            formContent
+        }
+        .navigationViewStyle(StackNavigationViewStyle())
+    }
+
+    private var formContent: some View {
         Form {
             statusSection
             vpnSection
         }
-        .navigationBarTitle("代理设置")
+        .navigationBarTitle("代理")
             .alert("删除在用节点？", isPresented: $showDeleteActiveConfirm) {
                 Button("删除并停核心", role: .destructive) {
                     CZFVPNManager.shared.removeNodeLinks(pendingDeleteLinks)

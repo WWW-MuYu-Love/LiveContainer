@@ -293,6 +293,21 @@ static NSString* invokeAppMain(NSString *selectedApp, NSString *selectedContaine
     if(!guestAppInfo) {
         return @"App bundle not found! Unable to read LCAppInfo.plist.";
     }
+
+    // 单 App VPN 经典启动补核心：核心原本跑在宿主 UI 进程
+    // 里，经典交接后宿主自杀、新游客进程里没有核心，插件
+    // 探不到就 fail-open 直连（小窗口不死宿主、一直正常）。
+    // 这里赶在下面覆盖 NSUserDefaults / 主目录之前，让游客
+    // 进程自己把核心起起来（管理器读的是 LC 自己的偏好，
+    // 覆盖后读到的是游客偏好）。多任务（LiveProcess）与
+    // SideStore 不走：宿主还活着，核心在宿主里。Swift 桥按
+    // 类名运行时调用，不加编译期依赖，类不在即跳过。
+    if (!isLiveProcess && !isSideStore) {
+        Class guestCore = NSClassFromString(@"CZFGuestCoreBootstrap");
+        if (guestCore) {
+            [guestCore performSelector:@selector(startCoreIfNeededWithBundlePath:) withObject:bundlePath];
+        }
+    }
     
     if([guestAppInfo[@"doUseLCBundleId"] boolValue] ) {
         NSMutableDictionary* infoPlist = [NSMutableDictionary dictionaryWithContentsOfFile:[NSString stringWithFormat:@"%@/Info.plist", bundlePath]];

@@ -124,7 +124,7 @@ struct LCSettingsView: View {
                 if czfSettingsSearchVisible("jit 证书 导入证书 删除证书 诊断 无jit jitless") { jitLessSection }
                 if czfSettingsSearchVisible("jit 地址 udid 启用器 sidejitserver stikdebug sidestore") { jitSection }
                 if czfSettingsSearchVisible("32 模拟器 emulator 翻译层 32位") { emulatorSection }
-                if czfSettingsSearchVisible("应用设置 代理设置 vpn 多任务 外观 界面") { miscSection }
+                if czfSettingsSearchVisible("应用设置 多任务 外观 界面") { miscSection }
                 if czfSettingsSearchVisible("存储管理 数据管理 储存 备份 清理") { storageSection }
                 if czfSettingsSearchVisible("关于 github twitter 作者 livecontainer") { aboutSection }
                 if czfSettingsSearchVisible("更新 版本 检查更新 update") { updateSection }
@@ -132,6 +132,7 @@ struct LCSettingsView: View {
                 if czfSettingsSearchVisible("开发者 注入 调试 developer 模式") { developerSection }
             }
             .navigationBarTitle("lc.tabView.settings".loc)
+            .czfPullToSearch()
             .alert("lc.common.error".loc, isPresented: $errorShow){
             } message: {
                 Text(errorInfo)
@@ -325,8 +326,7 @@ struct LCSettingsView: View {
     @ViewBuilder private var miscSection: some View {
         // 杂项已收进「应用设置」子页（LCAppPreferencesView），
         // 主页只留一行入口，与存储管理同款，带图标不显突兀。
-        // 代理设置（原 VPN 标签页）入口紧跟其下（用户定版），
-        // 多 LC 从属实例不显示（与原 VPN 标签同规则）。
+        // 代理已回到独立标签页（用户定版），这里不再放入口。
         Section {
             NavigationLink {
                 LCAppPreferencesView()
@@ -334,16 +334,6 @@ struct LCSettingsView: View {
                 HStack {
                     LCSettingsIcon(systemName: "apps.iphone", color: .indigo)
                     Text("应用设置")
-                }
-            }
-            if sharedModel.multiLCStatus != 2 {
-                NavigationLink {
-                    LCVPNView()
-                } label: {
-                    HStack {
-                        LCSettingsIcon(systemName: "network", color: .blue)
-                        Text("代理设置")
-                    }
                 }
             }
         }
@@ -521,7 +511,7 @@ struct LCSettingsView: View {
             } label: {
                 HStack {
                     LCSettingsIcon(systemName: "arrow.down.circle", color: .blue)
-                    Text("更新")
+                    Text("检查更新")
                     Spacer()
                     Text(updateStatusText)
                         .font(.footnote)

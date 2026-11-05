@@ -28,10 +28,7 @@ final class CZFSearchCenter: ObservableObject {
 
 /// 标记「本页正嵌在 iOS 26 搜索标签里」：嵌着时页面关掉
 /// 自己的搜索栏（系统搜索框接管，词经 CZFSearchCenter
-/// 同步进来照常过滤）。另外 iOS 26 起源页/App 页在正页
-/// 上也不再挂自己的搜索栏（底部搜索标签是唯一入口，两
-/// 个搜索栏冲突，用户定），见各页的 czfOwnSearchDisabled；
-/// 旧系统无搜索标签，页面搜索栏照旧。
+/// 同步进来照常过滤），不在搜索标签里时一切照旧。
 private struct CZFInSearchTabKey: EnvironmentKey {
     static let defaultValue = false
 }
@@ -67,11 +64,6 @@ struct LCTabView: View {
     @StateObject var downloadHelper = DownloadHelper()
     @ObservedObject private var globalSearch = CZFSearchCenter.shared
     @FocusState private var searchFieldFocused: Bool
-    // iOS 26 搜索标签的呈现开关（本视图独立持有）：进搜索
-    // 标签时置 true（搜索框呈现并弹键盘，用户定：点搜索
-    // 按钮默认弹键盘），离开时置 false，保证每次进入都是
-    // 干净的 false→true 跳变。见搜索标签处注释。
-    @State private var searchPresented = false
     // 「源」标签的更新红点数字（源页算好写进来的）
     @AppStorage("CZFUpdatableAppCount") var updatableAppCount = 0
 
@@ -89,23 +81,9 @@ struct LCTabView: View {
             if newTab != .search {
                 globalSearch.lastContentTab = newTab
             }
-            if newTab == .search {
-                // 进搜索标签：打开全局搜索并清上一次的词
-                // （换页重新搜，关键词不带进新页面）；同时
-                // 把呈现开关拨开，搜索框呈现并弹键盘。
-                globalSearch.isActive = true
-                globalSearch.query = ""
-                searchPresented = true
-            } else if #available(iOS 26.0, *) {
-                // iOS 26：离开搜索标签，全局开关与呈现开关
-                // 一起关。呈现开关不在搜索标签时恒为 false，
-                // 每次进入都是一次干净的 false→true 跳变，
-                // 键盘必弹。旧系统分支没有搜索标签，胶囊
-                // 搜索的开关语义不变，不走这里。
-                globalSearch.isActive = false
-                searchPresented = false
-            } else if globalSearch.isActive {
-                // 旧系统：换页重新搜，搜索框保持开着。
+            // 换页重新搜：关键词不带去新页面，占位与过滤
+            // 都按新页面走；搜索框保持开着。
+            if globalSearch.isActive {
                 globalSearch.query = ""
             }
         }
@@ -208,13 +186,11 @@ struct LCTabView: View {
     }
     
     // 根标签栏：iOS 26+ 用系统新标签栏（Tab 新 API），以下
-    // 用旧标签栏。搜索：iOS 26 用系统搜索标签（role:
-    // .search 的独立玻璃圆钮，用户照图定版要原厂这个；
-    // 内容是当前页镜像 + 底部胶囊框，关搜索切回原页）；
-    // 旧系统不放搜索钮（用户定：取消掉），只剩系统全宽
-    // 标签栏。VPN 标签两条路都不再有（入口在设置页「代
-    // 理设置」），LCTabIdentifier.vpn 枚举留着不动，免
-    // 得旧的选中标签值对不上号。
+    // 用旧标签栏；搜索两条路统一为浮动圆形键 + 底部胶囊框
+    // （用户看视频定版的样式：停留在当前页、框浮在键盘上
+    // 方）。原 iOS 26 的系统搜索标签会切去镜像页，用户不要，
+    // 已去掉。「代理」是独立标签（LCTabIdentifier.vpn），
+    // 在设置左手边，多开副容器时不显示。
     @ViewBuilder private var rootTabs: some View {
         if #available(iOS 26.0, *) {
             TabView(selection: $sharedModel.selectedTab) {
@@ -232,54 +208,41 @@ struct LCTabView: View {
                         LCTweaksView()
                     }
                 }
+                if DataManager.shared.model.multiLCStatus != 2 {
+                    Tab("代理", systemImage: "network", value: LCTabIdentifier.vpn) {
+                        LCVPNView()
+                    }
+                }
                 Tab("lc.tabView.settings".loc, systemImage: "gearshape.fill", value: LCTabIdentifier.settings) {
                     LCSettingsView()
                 }
-                // 系统搜索标签（iOS 26 的 role: .search）：不进
-                // 胶囊、单独一颗玻璃圆钮摆在标签栏旁边（用户照
-                // 图定的原厂样式），胶囊因此只剩四个标签、自
-                // 然缩进。内容是上一个内容页的镜像 + 系统
-                // 搜索框，点开即搜当前页；取消后切回原页。
-                Tab("搜索", systemImage: "magnifyingglass", value: LCTabIdentifier.search, role: .search) {
-                    searchTabContent
-                        // 镜像页自带搜索栏要关掉（环境开关是老
-                        // 搜索标签时代留的现成管线）：只留标签
-                        // 这一个系统搜索框，词经全局中心同步进
-                        // 镜像页的本地过滤，不会出现两个搜索框。
-                        .environment(\.czfInSearchTab, true)
-                        // 搜索框用系统原厂 .searchable（用户定）：
-                        // 字段与取消都由系统出，文本绑到全局搜
-                        // 索中心，各页过滤逻辑不变；呈现绑本视
-                        // 图的 searchPresented（进标签置 true、
-                        // 离开置 false，见 body 的选中变化处理）。
-                        // 沿革：3.8.6 时呈现绑全局中心，开关残留
-                        // true 时进标签没有跳变、键盘时弹时不弹；
-                        // 3.8.7 索性不绑呈现、指望系统自动聚焦，
-                        // 结果在这种镜像页结构下键盘根本不弹。
-                        // 现在呈现开关独立持有且进出必翻转，每次
-                        // 点搜索按钮都默认弹键盘（3.8.8 录屏确认
-                        // 键盘已稳定弹出）；3.8.8 的其余毛病——打
-                        // 字不过滤、取消留水滴、呈现闪烁——出在各
-                        // 页拿全局开关当过滤门、以及收起途中程序
-                        // 化切标签，已分别去掉（见各页同步与本文件
-                        // rootTabs 尾部注释），呈现这条保持不动。
-                        .searchable(text: searchTextBinding, isPresented: $searchPresented, prompt: Text(globalSearchPlaceholder))
+            }
+            .overlay(alignment: .bottomTrailing) {
+                globalSearchButton
+            }
+            .overlay {
+                // 搜索开着时，点页面其他任何地方：键盘与
+                // 搜索栏一起收起（用户定）。透明层只接点
+                // 按，滚动拖动照常穿透到底下页面；底部让
+                // 出搜索栏 + 标签栏的高度，那片不归它管
+                // （取消钮、输入框、标签照常可点）。
+                if globalSearch.isActive {
+                    Color.clear
+                        .contentShape(Rectangle())
+                        .padding(.bottom, 140)
+                        .simultaneousGesture(
+                            TapGesture().onEnded {
+                                closeGlobalSearch()
+                            }
+                        )
                 }
             }
-
-            // 注意：这里故意不再监听「搜索被取消」去程序化
-            // 切标签。3.8.8 录屏实测：在系统收起搜索的形态
-            // 动画途中改选中标签，玻璃形态会被打断、留下一
-            // 颗小水滴残影，呈现还会来回闪烁；取消后人停在
-            // 搜索标签（内容就是当前页的镜像）即可，要回内
-            // 容页由用户自己点标签。
-            .onChange(of: searchPresented) { presented in
-                // 呈现关掉时（系统取消、或切走标签）只清词、
-                // 不切标签：各页现在只认词过滤，词不清就会
-                // 拿着上一次的词继续过滤，对不上眼前的界面；
-                // 清词不碰选中标签，不打断收起动画。
-                if !presented {
-                    globalSearch.query = ""
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                globalSearchBar
+            }
+            .onChange(of: globalSearch.isActive) { active in
+                if active {
+                    searchFieldFocused = true
                 }
             }
         } else {
@@ -306,13 +269,22 @@ struct LCTabView: View {
                         }
                         .tag(LCTabIdentifier.tweaks)
                 }
+                if DataManager.shared.model.multiLCStatus != 2 {
+                    LCVPNView()
+                        .tabItem {
+                            Label("代理", systemImage: "network")
+                        }
+                        .tag(LCTabIdentifier.vpn)
+                }
                 LCSettingsView()
                     .tabItem {
                         Label("lc.tabView.settings".loc, systemImage: "gearshape.fill")
                     }
                     .tag(LCTabIdentifier.settings)
             }
-
+            .overlay(alignment: .bottomTrailing) {
+                globalSearchButton
+            }
             .overlay {
                 // 搜索开着时，点页面其他任何地方：键盘与
                 // 搜索栏一起收起（用户定）。透明层只接点
@@ -341,6 +313,16 @@ struct LCTabView: View {
         }
     }
 
+    // 圆形搜索键与标签栏的对齐：iOS 26 的标签栏是浮动胶
+    // 囊，搜索键与它同高并排——直径就取胶囊高（用户截图
+    // 实测约 63pt），底边与胶囊底边对齐即圆心对齐（此
+    // 前 52 直径 + 36 间距，键又小又骑在胶囊右上角）。
+    // 旧标签栏是全宽贴底，键浮在它上方（92 不变）。
+    private var searchButtonBottomPadding: CGFloat {
+        if #available(iOS 26.0, *) { return 3 }
+        return 92
+    }
+
     // iOS 26 液态玻璃背景：系统玻璃（可交互版给按钮用，
     // 按压有玻璃回弹），旧系统退回超薄材质 + 同款阴影与
     // 描边。玻璃自带高光边缘，26 上不再叠手动阴影。
@@ -367,6 +349,24 @@ struct LCTabView: View {
                         shape.strokeBorder(Color.primary.opacity(0.06), lineWidth: 1)
                     }
             }
+        }
+    }
+
+    // 底部圆形搜索键：浮在标签栏右侧，不挡任何标签的点击。
+    @ViewBuilder private var globalSearchButton: some View {
+        if !globalSearch.isActive {
+            Button {
+                globalSearch.isActive = true
+            } label: {
+                Image(systemName: "magnifyingglass")
+                    .font(.system(size: 23, weight: .semibold))
+                    .foregroundStyle(.primary)
+                    .frame(width: 63, height: 63)
+                    .modifier(CZFGlassBackground(shape: Circle(), interactive: true))
+            }
+            .buttonStyle(.plain)
+            .padding(.trailing, 16)
+            .padding(.bottom, searchButtonBottomPadding)
         }
     }
 
@@ -413,7 +413,8 @@ struct LCTabView: View {
         case .sources: return "搜索源"
         case .apps: return "搜索 App"
         case .tweaks: return "搜索模块"
-        case .settings, .vpn: return "搜索设置"
+        case .settings: return "搜索设置"
+        case .vpn: return "搜索"
         case .search: return "搜索 App"
         }
     }
@@ -422,34 +423,6 @@ struct LCTabView: View {
         globalSearch.query = ""
         globalSearch.isActive = false
         searchFieldFocused = false
-        // 在系统搜索标签里关搜索 = 切回刚才的内容页
-        if sharedModel.selectedTab == .search {
-            sharedModel.selectedTab = globalSearch.lastContentTab
-        }
-    }
-
-    // 系统原厂搜索框的文本绑定：只绑文本到全局搜索中心，
-    // 各页的过滤读的还是同一份 query/isActive。呈现绑在
-    // 本视图的 searchPresented @State 上（见搜索标签处
-    // 注释的沿革），不走这个绑定。
-    private var searchTextBinding: Binding<String> {
-        Binding(get: { globalSearch.query }, set: { globalSearch.query = $0 })
-    }
-
-    // 系统搜索标签的内容：上一个内容页的镜像（同一页的
-    // 新实例，滚动位置不共享，这是系统搜索标签的老代价）；
-    // 镜像页同样读全局搜索词过滤。
-    @ViewBuilder private var searchTabContent: some View {
-        switch globalSearch.lastContentTab {
-        case .sources:
-            LCSourcesView()
-        case .apps, .search:
-            LCAppListView()
-        case .tweaks:
-            LCTweaksView()
-        case .settings, .vpn:
-            LCSettingsView()
-        }
     }
 
     func dispatchURL(url: URL) {
@@ -608,5 +581,92 @@ struct LCTabView: View {
             return
         }
         LCUtils.appGroupUserDefault.set(bookmark, forKey: "LCLaunchExtensionPrivateDocBookmark")
+    }
+}
+
+// 下拉到顶唤起搜索（用户加定）：各页滚到顶后手指再往下
+// 拉过门槛，就打开全局搜索——胶囊栏弹出、键盘随焦点跟上
+// （与点浮动键等效）；收起仍走点旁边/取消的老路。探针是
+// 个零尺寸 UIKit 视图，挂在页面根视图的背景里：逐层往
+// 上找「子树里含滚动视图的最低祖先」，再在那棵子树里广
+// 度优先取最浅的 UIScrollView（即页面主滚动视图），KVO
+// 盯它的 contentOffset。触发要同时满足：搜索没开、手指
+// 正拉着（isTracking，惯性回弹不算）、偏移越过静止位
+// 55pt——只有真下拉才到得了。
+struct CZFPullToSearchProbe: UIViewRepresentable {
+    func makeUIView(context: Context) -> ProbeView {
+        ProbeView()
+    }
+
+    func updateUIView(_ uiView: ProbeView, context: Context) {
+        uiView.attachIfNeeded()
+    }
+
+    final class ProbeView: UIView {
+        private weak var observedScrollView: UIScrollView?
+        private var observation: NSKeyValueObservation?
+
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            attachIfNeeded()
+        }
+
+        override func didMoveToSuperview() {
+            super.didMoveToSuperview()
+            attachIfNeeded()
+        }
+
+        func attachIfNeeded() {
+            guard window != nil, observedScrollView == nil else { return }
+            var ancestor: UIView? = superview
+            while let node = ancestor {
+                if let scroll = Self.shallowestScrollView(in: node) {
+                    observedScrollView = scroll
+                    observation = scroll.observe(\.contentOffset, options: [.new]) { [weak self] scrollView, _ in
+                        self?.check(scrollView)
+                    }
+                    return
+                }
+                ancestor = node.superview
+            }
+        }
+
+        private static func shallowestScrollView(in root: UIView) -> UIScrollView? {
+            var queue: [UIView] = [root]
+            var index = 0
+            while index < queue.count {
+                let view = queue[index]
+                index += 1
+                if let scroll = view as? UIScrollView {
+                    return scroll
+                }
+                queue.append(contentsOf: view.subviews)
+            }
+            return nil
+        }
+
+        private func check(_ scrollView: UIScrollView) {
+            guard scrollView.isTracking else { return }
+            guard !CZFSearchCenter.shared.isActive else { return }
+            let rest = -scrollView.adjustedContentInset.top
+            if scrollView.contentOffset.y < rest - 55 {
+                DispatchQueue.main.async {
+                    if !CZFSearchCenter.shared.isActive {
+                        CZFSearchCenter.shared.isActive = true
+                    }
+                }
+            }
+        }
+    }
+}
+
+extension View {
+    // 给页面根视图挂下拉唤起搜索（探针见上）。
+    func czfPullToSearch() -> some View {
+        background(
+            CZFPullToSearchProbe()
+                .frame(width: 0, height: 0)
+                .allowsHitTesting(false)
+        )
     }
 }

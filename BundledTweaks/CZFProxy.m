@@ -89,6 +89,58 @@ static volatile int64_t gStatCfg = 0;
 // （核心不在时断网不直连）；没这个文件的 App 维持原来的
 // fail-open。标记在插件同目录，宿主每次签 App 时同步
 static BOOL gStrictMode = NO;
+// 节点端点豁免（经典启动核心与插件同进程时用）：宿主在插件
+// 同目录放 CZFProxyCoreEndpoints（每行 server<TAB>port，
+// 全部候选节点），插件启动时读进来。核心自己拨节点服务器
+// 的那几跳绝不能被钩子处理：域名被解析成假 IP、TCP 又被
+// 拐回核心自己、严格模式还会误杀核心的 UDP。域名先在
+// getaddrinfo 处放行真解析并记下真实 IP 集，之后 connect /
+// connectx / sendto / sendmsg 按 (IP, 端口) 精确放行。多任
+// 务模式核心在宿主进程，这些放行永远命中不到，无副作用。
+static NSMutableDictionary<NSString *, NSNumber *> *gCoreHosts = nil;
+static NSMutableSet<NSString *> *gCoreEndpoints = nil;
+static pthread_mutex_t gCoreLock = PTHREAD_MUTEX_INITIALIZER;
+
+static NSString *CZFCoreEndpointKey(uint32_t ip, uint16_t portHostOrder) {
+    struct in_addr a;
+    a.s_addr = htonl(ip);
+    char buf[INET_ADDRSTRLEN];
+    if (!inet_ntop(AF_INET, &a, buf, sizeof(buf))) return nil;
+    return [NSString stringWithFormat:@"%s:%u", buf, (unsigned)portHostOrder];
+}
+
+static BOOL CZFIsCoreEndpoint(uint32_t ip, uint16_t portHostOrder) {
+    if (!gCoreEndpoints) return NO;
+    NSString *key = CZFCoreEndpointKey(ip, portHostOrder);
+    if (!key) return NO;
+    pthread_mutex_lock(&gCoreLock);
+    BOOL hit = [gCoreEndpoints containsObject:key];
+    pthread_mutex_unlock(&gCoreLock);
+    return hit;
+}
+
+static void CZFLoadCoreEndpoints(NSString *path) {
+    gCoreHosts = [NSMutableDictionary dictionary];
+    gCoreEndpoints = [NSMutableSet set];
+    NSString *text = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil];
+    if (!text) return;
+    for (NSString *line in [text componentsSeparatedByCharactersInSet:[NSCharacterSet newlineCharacterSet]]) {
+        NSArray<NSString *> *parts = [line componentsSeparatedByString:@"\t"];
+        if (parts.count != 2) continue;
+        NSString *host = [parts[0] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+        NSInteger port = [parts[1] integerValue];
+        if (host.length == 0 || port <= 0 || port > 65535) continue;
+        struct in_addr v4;
+        if (inet_pton(AF_INET, host.UTF8String, &v4) == 1) {
+            // IP 字面量节点：直接进端点集
+            NSString *key = CZFCoreEndpointKey(ntohl(v4.s_addr), (uint16_t)port);
+            if (key) [gCoreEndpoints addObject:key];
+        } else {
+            gCoreHosts[[host lowercaseString]] = @((uint16_t)port);
+        }
+    }
+}
+
 static double gLastStatWrite = 0;
 static pthread_mutex_t gStatLock = PTHREAD_MUTEX_INITIALIZER;
 // 统计按 App 分文件（CZFProxyStats-<包名>.txt）：所有开了
@@ -385,6 +437,12 @@ static int CZFConnect(int sockfd, const struct sockaddr *addr, socklen_t addrlen
     const struct sockaddr_in *sin = (const struct sockaddr_in *)addr;
     uint32_t ip = ntohl(sin->sin_addr.s_addr);
 
+    // 核心自己拨节点服务器的连接（经典模式同进程时）：原样
+    // 放行，拐回核心自己就是死循环
+    if (CZFIsCoreEndpoint(ip, ntohs(sin->sin_port))) {
+        __sync_add_and_fetch(&gStatConnPass, 1);
+        return orig_connect(sockfd, addr, addrlen);
+    }
     if (CZFIsPrivateOrLoopback(ip)) {
         __sync_add_and_fetch(&gStatConnPass, 1);
         return orig_connect(sockfd, addr, addrlen);
@@ -507,6 +565,11 @@ static int CZFConnectx(int s, const void *ep, uint32_t aid, unsigned int flags, 
     }
     const struct sockaddr_in *sin = (const struct sockaddr_in *)dst;
     uint32_t ip = ntohl(sin->sin_addr.s_addr);
+    // 核心自己拨节点服务器的连接（经典模式同进程时）：原样放行
+    if (CZFIsCoreEndpoint(ip, ntohs(sin->sin_port))) {
+        CZFWriteStats(NO);
+        return orig_connectx(s, ep, aid, flags, iov, iovcnt, len, cid);
+    }
     if (CZFIsPrivateOrLoopback(ip)) {
         CZFWriteStats(NO);
         return orig_connectx(s, ep, aid, flags, iov, iovcnt, len, cid);
@@ -859,6 +922,14 @@ static ssize_t CZFSend(int fd, const void *buf, size_t len, int flags) {
 }
 
 static ssize_t CZFSendto(int fd, const void *buf, size_t len, int flags, const struct sockaddr *addr, socklen_t addrlen) {
+    // 核心自己的 UDP（经典模式同进程时，如 hysteria2 节点）：
+    // 原样放行，不进 QUIC 中继、也不被严格模式误杀
+    if (addr && addr->sa_family == AF_INET) {
+        const struct sockaddr_in *coreSin = (const struct sockaddr_in *)addr;
+        if (CZFIsCoreEndpoint(ntohl(coreSin->sin_addr.s_addr), ntohs(coreSin->sin_port))) {
+            return orig_sendto(fd, buf, len, flags, addr, addrlen);
+        }
+    }
     if (addr && CZFIsUDPSocket(fd)) {
         if (CZFIsQUICAddr(addr)) {
             if (!CZFCoreAlive()) {
@@ -889,6 +960,13 @@ static ssize_t CZFSendto(int fd, const void *buf, size_t len, int flags, const s
 }
 
 static ssize_t CZFSendmsg(int fd, const struct msghdr *msg, int flags) {
+    // 核心自己的 UDP（经典模式同进程时）：原样放行，同 CZFSendto
+    if (msg && msg->msg_name && ((const struct sockaddr *)msg->msg_name)->sa_family == AF_INET) {
+        const struct sockaddr_in *coreSin = (const struct sockaddr_in *)msg->msg_name;
+        if (CZFIsCoreEndpoint(ntohl(coreSin->sin_addr.s_addr), ntohs(coreSin->sin_port))) {
+            return orig_sendmsg(fd, msg, flags);
+        }
+    }
     if (msg && CZFIsUDPSocket(fd)) {
         if (msg->msg_name) {
         const struct sockaddr *addr = (const struct sockaddr *)msg->msg_name;
@@ -1208,6 +1286,31 @@ static int CZFGetAddrInfo(const char *node, const char *service, const struct ad
         return orig_getaddrinfo(node, service, hints, res);
     }
     NSString *host = [NSString stringWithUTF8String:node];
+    // 节点服务器域名（经典模式核心与插件同进程时，核心自己
+    // 要连的）：真解析，并把返回的真实 IP 按节点端口记进豁
+    // 免端点集，后面 connect / sendto 按 (IP, 端口) 放行核
+    // 心的那几跳。给假 IP 的话核心永远连不上节点。
+    NSNumber *corePort = nil;
+    if (gCoreHosts) {
+        pthread_mutex_lock(&gCoreLock);
+        corePort = gCoreHosts[[host lowercaseString]];
+        pthread_mutex_unlock(&gCoreLock);
+    }
+    if (corePort) {
+        int rc = orig_getaddrinfo(node, service, hints, res);
+        if (rc == 0 && res && *res) {
+            pthread_mutex_lock(&gCoreLock);
+            for (struct addrinfo *ai = *res; ai; ai = ai->ai_next) {
+                if (ai->ai_family == AF_INET && ai->ai_addr) {
+                    const struct sockaddr_in *r = (const struct sockaddr_in *)ai->ai_addr;
+                    NSString *key = CZFCoreEndpointKey(ntohl(r->sin_addr.s_addr), (uint16_t)corePort.unsignedShortValue);
+                    if (key) [gCoreEndpoints addObject:key];
+                }
+            }
+            pthread_mutex_unlock(&gCoreLock);
+        }
+        return rc;
+    }
     if ([host hasSuffix:@".local"]) {
         return orig_getaddrinfo(node, service, hints, res);
     }
@@ -1291,6 +1394,7 @@ static void CZFProxyInit(void) {
         gStatsPath = [dir stringByAppendingPathComponent:[NSString stringWithFormat:@"CZFProxyStats-%@.txt", bid]];
         NSString *strictPath = [dir stringByAppendingPathComponent:@"CZFProxyStrict"];
         gStrictMode = [[NSFileManager defaultManager] fileExistsAtPath:strictPath];
+        CZFLoadCoreEndpoints([dir stringByAppendingPathComponent:@"CZFProxyCoreEndpoints"]);
     }
     orig_connect = (int (*)(int, const struct sockaddr *, socklen_t))dlsym(RTLD_DEFAULT, "connect");
     orig_getaddrinfo = (int (*)(const char *, const char *, const struct addrinfo *, struct addrinfo **))dlsym(RTLD_DEFAULT, "getaddrinfo");

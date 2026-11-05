@@ -784,6 +784,7 @@ struct LCSourcesView: View {
             }
         }
         .czfSearchable(text: $searchContext.query, placement: .navigationBarDrawer(displayMode: .always), disabled: czfOwnSearchDisabled)
+        .czfPullToSearch()
         .onChange(of: globalSearch.query) { newValue in
             // 全局搜索的词无条件同步进本页 searchContext，
             // 走现成过滤，与 App 页同款：全局词只由搜索框
@@ -1274,9 +1275,15 @@ private struct AltStoreSourceSectionView: View {
             Text(text)
                 .font(.system(size: 10.5))
                 .lineLimit(1)
+                // 字不许截断（用户实测合计大小被截成
+                // 「486.2…」）：胶囊永远按全文宽走，宁可
+                // 整排往三角那边靠一点。
+                .fixedSize(horizontal: true, vertical: false)
         }
         .foregroundColor(.secondary)
-        .padding(.horizontal, 8)
+        // 横向 padding 加宽（用户：胶囊加宽点）8 → 10；
+        // 省出的宽度从胶囊间距与头行间距里找平（见下）。
+        .padding(.horizontal, 10)
         .padding(.vertical, 4)
         .background(Capsule().fill(Color.secondary.opacity(0.12)))
     }
@@ -1290,7 +1297,7 @@ private struct AltStoreSourceSectionView: View {
         // 的整段一行：内容瞬间消失、行高再跳，动画坏）。
         // 左右滑挂头行：右滑到底刷新、左滑删除走确认。
         Section {
-            HStack(alignment: .center, spacing: 10) {
+            HStack(alignment: .center, spacing: 8) {
                 SourceIconView(url: item.primaryIconURL)
                     .frame(width: 48, height: 48)
                     .clipShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
@@ -1307,7 +1314,7 @@ private struct AltStoreSourceSectionView: View {
                         .lineLimit(1)
                         .truncationMode(.middle)
                     if let source = item.source {
-                        HStack(spacing: 6) {
+                        HStack(spacing: 4) {
                             headerChip(icon: "square.grid.2x2", text: "\(source.apps.count) 个应用")
                             if let totalSizeText {
                                 headerChip(icon: "doc", text: totalSizeText)
@@ -1522,11 +1529,13 @@ private struct LCSourceAppBanner: View {
                             .font(.system(size: 13, weight: .bold))
                             .lineLimit(1)
                         if app.isBeta {
+                            // 测试版胶囊缩小（用户：胶囊和字都
+                            // 再小点）：字 11 → 9，留白 6/3 → 5/2。
                             Text("lc.sources.badge.beta".loc.uppercased())
-                                .font(.caption2.weight(.heavy))
+                                .font(.system(size: 9, weight: .heavy))
                                 .foregroundColor(.white)
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 3)
+                                .padding(.horizontal, 5)
+                                .padding(.vertical, 2)
                                 .background(Capsule().fill(Color.orange))
                         }
                     }

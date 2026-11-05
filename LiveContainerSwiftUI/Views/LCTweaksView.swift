@@ -556,6 +556,7 @@ struct LCTweaksView: View {
                 .padding(.vertical, 8)
                 LCTweakFolderView(baseUrl: showShared ? LCPath.lcGroupTweakPath : LCPath.tweakPath, isRoot: true)
                     .id(showShared)
+                    .czfPullToSearch()
             }
         }
         .navigationViewStyle(StackNavigationViewStyle())

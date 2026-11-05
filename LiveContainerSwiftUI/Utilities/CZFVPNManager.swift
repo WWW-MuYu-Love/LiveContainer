@@ -1144,6 +1144,14 @@ public final class CZFVPNManager {
         // 不留标记，维持原来的 fail-open。标记不是 dylib，
         // 不影响返回值（返回值只表示 dylib 有没有换上）
         let strictMarker = tweakFolderUrl.appendingPathComponent("CZFProxyStrict")
+        // 节点端点豁免名单（经典启动核心与插件同进程用）：全部
+        // 候选节点的 server+端口写成一个文本文件放插件同目录，
+        // 插件启动时读它——核心自己连节点服务器的那几跳不许被
+        // 钩子拦（解析给假 IP / TCP 又拐回核心自己 / 严格模式
+        // 误杀核心的 UDP），否则经典模式核心起来了也出不了网。
+        // 多任务下核心在宿主进程、插件在游客进程，名单用不上，
+        // 写了也无害。内容与现文件一致就不重写。
+        let endpointsFile = tweakFolderUrl.appendingPathComponent("CZFProxyCoreEndpoints")
         if isEnabled(for: appInfo) {
             if nodeOverride(for: appInfo) != nil {
                 if !fm.fileExists(atPath: strictMarker.path) {
@@ -1151,6 +1159,10 @@ public final class CZFVPNManager {
                 }
             } else {
                 try? fm.removeItem(at: strictMarker)
+            }
+            let endpointsText = Self.coreEndpointsText()
+            if (try? String(contentsOf: endpointsFile, encoding: .utf8)) != endpointsText {
+                try? endpointsText.write(to: endpointsFile, atomically: true, encoding: .utf8)
             }
             guard let src = Bundle.main.url(forResource: "CZFProxy", withExtension: "dylib") else { return false }
             let srcData = try? Data(contentsOf: src)
@@ -1163,8 +1175,33 @@ public final class CZFVPNManager {
         } else {
             try? fm.removeItem(at: dest)
             try? fm.removeItem(at: strictMarker)
+            try? fm.removeItem(at: endpointsFile)
         }
         return false
+    }
+
+    // 豁免名单内容：节点列表里每条链接都按起核心的同一条路
+    // 生成 sing-box 配置，再把出站里的 server / server_port
+    // 摘出来——摘的就是核心实际要拨的端点，协议差异（vmess
+    // 的 JSON、ss 的 authority、原始 JSON 节点）都由配置生成
+    // 器兜住，这里不另写解析。全部候选都写：核心故障切换 /
+    // 自动轮换换到哪个节点都在名单里。一行一个
+    // 「server<TAB>port」，坏链接跳过。
+    private static func coreEndpointsText() -> String {
+        var lines = Set<String>()
+        for link in shared.nodeLinks {
+            guard let json = try? CZFSingBoxConfig.configJSON(for: Self.normalizedShareLink(link), socksPort: Self.socksPort, httpPort: 10828),
+                  let data = json.data(using: .utf8),
+                  let dict = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+                  let outbounds = dict["outbounds"] as? [[String: Any]] else { continue }
+            for outbound in outbounds {
+                if let server = outbound["server"] as? String, !server.isEmpty,
+                   let port = outbound["server_port"] as? Int, port > 0 {
+                    lines.insert("\(server)\t\(port)")
+                }
+            }
+        }
+        return lines.sorted().joined(separator: "\n")
     }
 
     // MARK: - 核心启停
