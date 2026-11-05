@@ -140,7 +140,7 @@ struct LCWebView: View {
     
     func onViewAppear() {
         let observer = WebViewLoadObserver(loadStatus: $loadStatus, canGoBack: $canGoBack, canGoForward: $canGoForward, webView: self.webView.webView)
-        let webViewDelegate = WebViewDelegate(pageTitle: $pageTitle, errorShow: $errorShow, errorInfo: $errorInfo, loadStatus: $loadStatus, urlSchemeHandler:onURLSchemeDetected, universalLinkHandler: onUniversalLinkDetected,)
+        let webViewDelegate = WebViewDelegate(pageTitle: $pageTitle, errorShow: $errorShow, errorInfo: $errorInfo, loadStatus: $loadStatus, urlSchemeHandler:onURLSchemeDetected, universalLinkHandler: onUniversalLinkDetected, ipaDownloadHandler: onIPADownloadDetected)
         webView.setDelegate(delegete: webViewDelegate)
         webView.setObserver(observer: observer)
     }
@@ -166,6 +166,18 @@ struct LCWebView: View {
         }
     }
     
+    // IPA 直链被浏览器拦下后走这里：先关浏览器，再发安装
+    // 通知给 App 页的安装队列下载安装（源页安装同款时序，
+    // 等退场动画走完再发，免得下载/安装界面被退场吞掉）。
+    // 用户粘贴直链点「打开网址」时浏览器就是为这个链接开
+    // 的，关掉正好落回应用页看下载进度。
+    public func onIPADownloadDetected(url: URL) {
+        isPresent = false
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            NotificationCenter.default.post(name: NSNotification.InstallAppNotification, object: ["url": url])
+        }
+    }
+
     public func onURLSchemeDetected(url: URL) async {
         var appToLaunch : LCAppModel? = nil
         var appListsToConsider = [sharedModel.apps]
@@ -318,21 +330,38 @@ class WebViewDelegate : NSObject,WKNavigationDelegate {
     private var loadStatus: Binding<Double>
     private var urlSchemeHandler: (URL) async -> Void
     private var universalLinkHandler: (URL , [String]) async -> Void // url, [String] of all apps that can open this web page
+    private var ipaDownloadHandler: (URL) -> Void
     var domainBundleIdDict : [String:[String]] = [:]
-    
-    init(pageTitle: Binding<String>, errorShow: Binding<Bool>, errorInfo: Binding<String>, loadStatus: Binding<Double>, urlSchemeHandler: @escaping (URL) async -> Void, universalLinkHandler: @escaping (URL , [String]) async -> Void) {
+
+    init(pageTitle: Binding<String>, errorShow: Binding<Bool>, errorInfo: Binding<String>, loadStatus: Binding<Double>, urlSchemeHandler: @escaping (URL) async -> Void, universalLinkHandler: @escaping (URL , [String]) async -> Void, ipaDownloadHandler: @escaping (URL) -> Void) {
         self.pageTitle = pageTitle
         self.errorShow = errorShow
         self.errorInfo = errorInfo
         self.loadStatus = loadStatus
         self.urlSchemeHandler = urlSchemeHandler
         self.universalLinkHandler = universalLinkHandler
+        self.ipaDownloadHandler = ipaDownloadHandler
         super.init()
     }
     
     func webView(_ webView: WKWebView,
                    decidePolicyFor navigationAction: WKNavigationAction,
                    decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+        // IPA 直链不进网页加载：浏览器渲染不了二进制包，硬
+        // 加载只会以「帧框加载已中断」报错收场（用户实测：
+        // 粘贴 IPA 直链点打开网址就报错）。拦下来转交安装
+        // 通道下载安装（与源页安装同一条队列），才是用户
+        // 要的「在下载中」。
+        if let actionURL = navigationAction.request.url,
+           let actionScheme = actionURL.scheme?.lowercased(),
+           actionScheme == "http" || actionScheme == "https" {
+            let ext = actionURL.pathExtension.lowercased()
+            if ext == "ipa" || ext == "tipa" {
+                decisionHandler(.cancel)
+                ipaDownloadHandler(actionURL)
+                return
+            }
+        }
         // 原来传 rawValue 3（allow.rawValue + 2，公开枚举里没有）：
         // 当前 WebKit 把它当允许处理才没出事，换 SDK 可能变脸，
         // 直接写 .allow，行为不变、零成本。
@@ -356,6 +385,27 @@ class WebViewDelegate : NSObject,WKNavigationDelegate {
 
     }
     
+    func webView(_ webView: WKWebView,
+                   decidePolicyFor navigationResponse: WKNavigationResponse,
+                   decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void) {
+        // 响应渲染不了（下载型内容）时的兜底：有些 IPA 直
+        // 链经跳转后最终网址不带 .ipa 后缀，导航阶段认不
+        // 出，靠响应给的建议文件名再认一次——是 IPA 就转
+        // 安装通道；其他下载文件同样取消加载（硬走下去只
+        // 会以「帧框加载已中断」弹错误，没有任何收益）。
+        guard navigationResponse.isForMainFrame, !navigationResponse.canShowMIMEType else {
+            decisionHandler(.allow)
+            return
+        }
+        decisionHandler(.cancel)
+        self.loadStatus.wrappedValue = 1.0
+        let filename = navigationResponse.response.suggestedFilename?.lowercased() ?? ""
+        if filename.hasSuffix(".ipa") || filename.hasSuffix(".tipa"),
+           let responseURL = navigationResponse.response.url {
+            ipaDownloadHandler(responseURL)
+        }
+    }
+
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         // WKWebView.title 是 String?，无标题页（空白页、纯文件页）
         // 时为 nil，强解包直接闪退。
@@ -368,9 +418,19 @@ class WebViewDelegate : NSObject,WKNavigationDelegate {
     // 失败/取消都把 loadStatus 置 1.0：进度条显隐条件是 loadStatus == 1.0
     // 才隐藏，不重置就一直悬停到下一次成功加载；新导航的进度 KVO 会
     // 重新驱动 loadStatus，不会被这次置位卡住。
+    // 「帧框加载已中断」（WebKitErrorDomain 102）不是给用户
+    // 看的失败：它是导航被策略中断的结果——下载拦截取消
+    // 加载、外链跳去别的 App 都会产生它。过滤掉，只留真
+    // 失败（断网、DNS、证书等）弹错误。
+    private func isFrameLoadInterrupted(_ error: Error) -> Bool {
+        let nsError = error as NSError
+        return nsError.domain == "WebKitErrorDomain" && nsError.code == 102
+    }
+
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
         self.loadStatus.wrappedValue = 1.0
         if (error as NSError).code == NSURLErrorCancelled { return }
+        if isFrameLoadInterrupted(error) { return }
         self.errorInfo.wrappedValue = error.localizedDescription
         self.errorShow.wrappedValue = true
     }
@@ -378,6 +438,7 @@ class WebViewDelegate : NSObject,WKNavigationDelegate {
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
         self.loadStatus.wrappedValue = 1.0
         if (error as NSError).code == NSURLErrorCancelled { return }
+        if isFrameLoadInterrupted(error) { return }
         self.errorInfo.wrappedValue = error.localizedDescription
         self.errorShow.wrappedValue = true
     }

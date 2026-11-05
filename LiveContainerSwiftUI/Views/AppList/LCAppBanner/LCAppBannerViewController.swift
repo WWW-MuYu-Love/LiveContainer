@@ -140,11 +140,13 @@ final class LCAppBannerViewController: UIViewController, UIContextMenuInteractio
         vpnSwipeButton.addTarget(self, action: #selector(vpnSwipeTapped), for: .touchUpInside)
         trailingSwipeButton.addTarget(self, action: #selector(trailingSwipeTapped), for: .touchUpInside)
 
-        // 滑开后点按按钮要稳（用户：右滑 VPN 要可以点按）：
-        // 列表层的 SwiftUI 点按手势会把控件的 touchUpInside
-        // 吞掉（点按只归位不触发），所以容器上再挂一个点按
-        // 识别器专门接管露出来的按钮区——手势识别器不吃
-        // 这套取消，命中哪颗钮就执行哪颗。命中判定在代理
+        // 点按按钮要稳（用户先后实测：右滑 VPN 点不中、
+        // 启动钮点了没反应）：列表层的 SwiftUI 点按手势会
+        // 把控件的 touchUpInside 吞掉，所以容器上挂一个
+        // 点按识别器统一接管卡片上的按钮——滑开时接管露
+        // 出来的横滑钮，未滑开时接管启动钮和两个次级钮
+        // （最小化/小窗口，同病同解）。手势识别器不吃这套
+        // 取消，命中哪颗钮就执行哪颗；命中判定在代理
         // shouldReceive 里做，没命中按钮区就放行给别人。
         let buttonTap = UITapGestureRecognizer(target: self, action: #selector(swipeButtonAreaTapped(_:)))
         buttonTap.delegate = self
@@ -600,23 +602,29 @@ final class LCAppBannerViewController: UIViewController, UIContextMenuInteractio
 
     // MARK: - 长按系统菜单（用户定版）
     // 删：多任务、用 VPN 打开、卸载；设置置顶，数据文件夹
-    // 改名放第二，之后模块文件夹、添加到主屏幕。头部用分
-    // 区标题一行显示「名称 · Bundle ID」：自绘卡片试过，
-    // 样子不行，用户拍板换回系统菜单、一行标题。
+    // 改名放第二，之后模块文件夹、添加到主屏幕。原来头部
+    // 有一行分区标题「名称 · Bundle ID」，用户后来拍板去
+    // 掉（卡片上就有名字，不用在菜单里再写一遍）；并且每
+    // 一栏各自独立成组——系统在组与组之间画分隔线，于是
+    // 像备份下面那条一样，每一栏下面都有横线。
 
     private func makeContextMenu() -> UIMenu {
         let model = configuration.model
         var menuChildren: [UIMenuElement] = []
 
+        // 一栏一组：每行单独包一个 displayInline 组，分隔
+        // 线就出现在每一栏之间。
+        func rowGroup(_ element: UIMenuElement) -> UIMenu {
+            UIMenu(title: "", options: .displayInline, children: [element])
+        }
+
         // 备份放整个菜单第一位（用户定：从左滑挪过来）
-        menuChildren.append(UIMenu(title: "", options: .displayInline, children: [
-            UIAction(
-                title: "备份",
-                image: UIImage(systemName: "tray.and.arrow.down.fill")
-            ) { [weak self] _ in
-                self?.backupApp()
-            }
-        ]))
+        menuChildren.append(rowGroup(UIAction(
+            title: "备份",
+            image: UIImage(systemName: "tray.and.arrow.down.fill")
+        ) { [weak self] _ in
+            self?.backupApp()
+        }))
 
         // Containers Picker（多容器才出现，原样保留）
         if model.uiContainers.count > 1 {
@@ -637,21 +645,20 @@ final class LCAppBannerViewController: UIViewController, UIContextMenuInteractio
             menuChildren.append(UIMenu(title: "Containers", options: .displayInline, children: containerActions))
         }
 
-        var sectionChildren: [UIMenuElement] = []
-        sectionChildren.append(UIAction(
+        menuChildren.append(rowGroup(UIAction(
             title: "lc.tabView.settings".loc,
             image: UIImage(systemName: "gear")
         ) { [weak self] _ in
             self?.openSettings()
-        })
+        }))
 
         if !model.uiIsShared, model.uiSelectedContainer != nil {
-            sectionChildren.append(UIAction(
+            menuChildren.append(rowGroup(UIAction(
                 title: "数据文件夹",
                 image: UIImage(systemName: "folder")
             ) { [weak self] _ in
                 self?.openDataFolder()
-            })
+            }))
         }
 
         // Tweak/Module Picker（多选：点一下勾上/再点取消，
@@ -673,11 +680,13 @@ final class LCAppBannerViewController: UIViewController, UIContextMenuInteractio
                 model.toggleTweakFolder(folderName)
             }
         }
-        sectionChildren.append(UIMenu(
+        // 子菜单也单独成组：包一层 displayInline，子菜单本
+        // 身照旧是带箭头的子菜单行，前后都有分隔线。
+        menuChildren.append(rowGroup(UIMenu(
             title: "lc.appSettings.tweakFolder".loc,
             image: UIImage(systemName: "wrench.and.screwdriver"),
             children: tweakMenuActions
-        ))
+        )))
 
         let addToHomeScreenMenu = UIMenu(
             title: "lc.appBanner.addToHomeScreen".loc,
@@ -698,13 +707,8 @@ final class LCAppBannerViewController: UIViewController, UIContextMenuInteractio
                 }
             ]
         )
-        sectionChildren.append(addToHomeScreenMenu)
+        menuChildren.append(rowGroup(addToHomeScreenMenu))
 
-        menuChildren.append(UIMenu(
-            title: "\(model.displayName) · \(model.bundleIdentifier)",
-            options: .displayInline,
-            children: sectionChildren
-        ))
         return UIMenu(title: "", children: menuChildren)
     }
 
@@ -903,10 +907,24 @@ final class LCAppBannerViewController: UIViewController, UIContextMenuInteractio
         }
     }
 
-    // 容器级点按识别器的落点分发：命中哪颗露出来的钮，
-    // 就走哪颗的动作（与全滑、控件点按同一入口）。
+    // 容器级点按识别器的落点分发：命中哪颗钮就走哪颗的
+    // 动作（与全滑、控件点按同一入口）。未滑开时命中启
+    // 动钮/次级钮走各自的点按处理（启动钮的长按吞噬时间
+    // 戳在 runButtonTapped 里，长按调面板后抬手这一下照
+    // 样被吞，不会误启动）；识别器 cancelsTouchesInView
+    // 会取消控件自身的触摸，touchUpInside 不会再重复触发。
     @objc private func swipeButtonAreaTapped(_ gesture: UITapGestureRecognizer) {
         let point = gesture.location(in: swipeContainerView)
+        if swipeOffset == 0 {
+            if bannerView.runControl.frame.insetBy(dx: -4, dy: -6).contains(point) {
+                runButtonTapped()
+            } else if let minimize = bannerView.minimizeControl, minimize.frame.contains(point) {
+                minimizeButtonTapped()
+            } else if let small = bannerView.smallWindowControl, small.frame.contains(point) {
+                smallWindowButtonTapped()
+            }
+            return
+        }
         if !vpnSwipeButton.isHidden, vpnSwipeButton.frame.contains(point) {
             vpnSwipeTapped()
         } else if !trailingSwipeButton.isHidden, trailingSwipeButton.frame.contains(point) {
@@ -1029,13 +1047,21 @@ final class LCAppBannerViewController: UIViewController, UIContextMenuInteractio
     }
 
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
-        // 按钮区点按识别器只在行滑开着、且落点确实在露出
-        // 的按钮帧内时才接管这次触摸，其余一律放行。
+        // 按钮区点按识别器只在落点确实命中它接管的按钮时
+        // 才接管这次触摸，其余一律放行：滑开着认露出的横
+        // 滑钮；未滑开认启动钮（命中区按它 point(inside:)
+        // 的外扩口径 -4/-6）和两个次级钮。bannerView 铺满
+        // 容器，未滑开时变换为零，按钮帧就是容器坐标系。
         if gestureRecognizer === swipeButtonTapGesture {
-            guard swipeOffset != 0 else { return false }
             let point = touch.location(in: swipeContainerView)
-            if !vpnSwipeButton.isHidden, vpnSwipeButton.frame.contains(point) { return true }
-            if !trailingSwipeButton.isHidden, trailingSwipeButton.frame.contains(point) { return true }
+            if swipeOffset != 0 {
+                if !vpnSwipeButton.isHidden, vpnSwipeButton.frame.contains(point) { return true }
+                if !trailingSwipeButton.isHidden, trailingSwipeButton.frame.contains(point) { return true }
+                return false
+            }
+            if bannerView.runControl.frame.insetBy(dx: -4, dy: -6).contains(point) { return true }
+            if let minimize = bannerView.minimizeControl, minimize.frame.contains(point) { return true }
+            if let small = bannerView.smallWindowControl, small.frame.contains(point) { return true }
             return false
         }
         return true

@@ -162,10 +162,11 @@ final class AltStoreSourcesViewModel: ObservableObject {
     private let cacheDirectoryName = "AltStoreSourceCache"
     
     init() {
+        // 只读本地缓存显示，不自动联网刷源（用户：源页面
+        // 不需要自动刷新）；刷新走工具栏按钮、单源右滑等
+        // 手动入口。多任务面板那边有它自己的打开时刷新，
+        // 不依赖这里。
         loadStoredSources()
-        Task {
-            await refreshAllSources()
-        }
     }
     
     func addSource(from rawValue: String) async -> String? {
@@ -554,6 +555,19 @@ enum CZFUpdateIgnore {
     }
 }
 
+private extension View {
+    /// 列表段间距：listSectionSpacing 是 iOS 17+ 的 API，
+    /// 老系统没有，保持系统默认不强改
+    @ViewBuilder
+    func czfListSectionSpacing(_ spacing: CGFloat) -> some View {
+        if #available(iOS 17.0, *) {
+            self.listSectionSpacing(spacing)
+        } else {
+            self
+        }
+    }
+}
+
 struct LCSourcesView: View {
     @StateObject private var viewModel = AltStoreSourcesViewModel()
     @State private var errorMessage: String?
@@ -561,6 +575,18 @@ struct LCSourcesView: View {
     @ObservedObject public var searchContext: SearchContext = SearchContext()
     @ObservedObject private var globalSearch = CZFSearchCenter.shared
     @Environment(\.czfInSearchTab) private var czfInSearchTab
+
+    // 本页自己的搜索栏关不关：嵌在搜索标签里关（历来如
+    // 此）；iOS 26 起在正页上也关——底部系统搜索标签是
+    // 唯一的搜索入口，页面上方再挂一个搜索栏和它冲突
+    // （用户定，与 App 页同款）。搜索词仍经全局中心同步
+    // 进 searchContext 照常过滤。旧系统没有搜索标签，
+    // 本页搜索栏保留不动。
+    private var czfOwnSearchDisabled: Bool {
+        if czfInSearchTab { return true }
+        if #available(iOS 26.0, *) { return true }
+        return false
+    }
     @State private var expandedSources: Set<URL> = []
     @State private var isManagingSources = false
     @State private var isBatchMode = false
@@ -572,19 +598,10 @@ struct LCSourcesView: View {
     // 遍版本、还逐个读忽略记录；改成算一次存起来，只在源/已装/
     // 忽略变时重算（见 refreshUpdatableCache 调用点）
     @State private var cachedUpdatableApps: [AltStoreSourceApp] = []
-    // 上次自动刷新源的时间（自动刷新节流：5 分钟内不重复刷）
-    @AppStorage("CZFLastSourceAutoRefresh") private var lastSourceAutoRefresh: Double = 0
-
-    /// 自动刷新源：打开 App / 切到源页时后台刷一次，更新红点
-    /// 才是准的；5 分钟内重复触发直接跳过，不浪费流量
-    private func autoRefreshSourcesIfNeeded() {
-        let now = Date().timeIntervalSince1970
-        guard now - lastSourceAutoRefresh > 300, !viewModel.sources.isEmpty else {
-            return
-        }
-        lastSourceAutoRefresh = now
-        Task { await viewModel.refreshAllSources() }
-    }
+    // 源不自动刷新（用户定）：进页、打开 App 都不联网刷源，
+    // 只显示缓存；刷新靠工具栏刷新钮和单源右滑手动触发。
+    // 下面的 CZFRefreshSourcesRequest 通知也只重算可更新
+    // 名单（本地计算），不再顺带刷源。
     
     @EnvironmentObject private var sharedModel : SharedModel
     
@@ -655,6 +672,12 @@ struct LCSourcesView: View {
                             .listRowBackground(Color.clear)
                         }
                     }
+                    // 卡与卡（段与段）之间的间距收紧（用户画圈
+                    // 指的就是两张源卡片中间那条空档）：定为
+                    // 10pt（系统默认约 35；用户定：App 页同类
+                    // 间距实测 8，这个取 10）；卡内任何间距、
+                    // 边距都不动
+                    .czfListSectionSpacing(10)
                 }
             }
             .navigationTitle("lc.tabView.sources".loc)
@@ -686,15 +709,28 @@ struct LCSourcesView: View {
                             .disabled(selectedIDs.isEmpty)
                         }
                         Button(isBatchMode ? "lc.common.cancel".loc : "lc.sources.batchSelect".loc, systemImage: isBatchMode ? "xmark" : "checkmark.circle") {
-                            isBatchMode.toggle()
-                            if !isBatchMode {
-                                selectedIDs.removeAll()
+                            // 右上角这组图标的切换不走动画（用户：
+                            // 图标动画延迟）：iOS 26 工具栏会给内容
+                            // 变化自带一段慢速形变 + 交叉淡入，
+                            // ✓ 与「安装／✕」重叠出残影近半秒，
+                            // 比列表里的勾选圈慢一拍。关掉动画，
+                            // 点按即时切换。
+                            var transaction = Transaction(animation: nil)
+                            transaction.disablesAnimations = true
+                            withTransaction(transaction) {
+                                isBatchMode.toggle()
+                                if !isBatchMode {
+                                    selectedIDs.removeAll()
+                                }
                             }
                         }
                         Button("lc.sources.addSource".loc, systemImage: "plus") {
                             isManagingSources = true
                         }
                     }
+                    // 「安装」钮的出现/消失也不带动布局动画，
+                    // 与上面的切换事务配套，整组瞬时换完
+                    .animation(nil, value: isBatchMode)
                 }
             }
         }
@@ -747,7 +783,7 @@ struct LCSourcesView: View {
                 )
             }
         }
-        .czfSearchable(text: $searchContext.query, placement: .navigationBarDrawer(displayMode: .always), disabled: czfInSearchTab)
+        .czfSearchable(text: $searchContext.query, placement: .navigationBarDrawer(displayMode: .always), disabled: czfOwnSearchDisabled)
         .onChange(of: globalSearch.query) { newValue in
             // 全局搜索（底部搜索框）驱动本页：开着时把词
             // 同步进本页的 searchContext，走现成过滤，
@@ -765,7 +801,6 @@ struct LCSourcesView: View {
 
         .onAppear {
             refreshUpdatableCache()
-            autoRefreshSourcesIfNeeded()
             // 默认自动展开所有源
             expandedSources = Set(viewModel.sources.map { $0.id })
             if !isViewAppeared {
@@ -793,10 +828,9 @@ struct LCSourcesView: View {
             handleURL(url: link)
         }
         .onReceive(NotificationCenter.default.publisher(for: Notification.Name("CZFRefreshSourcesRequest"))) { _ in
-            // App 每次打开时主框架发一次：源页在的话顺手刷新，
-            // 红点不用等用户点进源页才准；忽略/取消忽略也走这个
-            // 通知，顺带重算可更新名单
-            autoRefreshSourcesIfNeeded()
+            // App 每次打开时主框架发一次，忽略/取消忽略也走
+            // 这个通知：只重算可更新名单和红点（本地计算），
+            // 不联网刷源（用户：源页面不需要自动刷新）
             refreshUpdatableCache()
         }
     }
@@ -864,8 +898,13 @@ struct LCSourcesView: View {
             guard let source = item.source else { return [] }
             return source.apps.filter { selectedIDs.contains($0.bundleIdentifier) }
         }
-        isBatchMode = false
-        selectedIDs.removeAll()
+        // 退出批量模式同样即时切换（同工具栏动画延迟问题）
+        var transaction = Transaction(animation: nil)
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            isBatchMode = false
+            selectedIDs.removeAll()
+        }
         installBatch(appsToInstall)
     }
 
@@ -1232,9 +1271,9 @@ private struct AltStoreSourceSectionView: View {
     private func headerChip(icon: String, text: String) -> some View {
         HStack(spacing: 4) {
             Image(systemName: icon)
-                .font(.system(size: 11, weight: .medium))
+                .font(.system(size: 9.5, weight: .medium))
             Text(text)
-                .font(.system(size: 12))
+                .font(.system(size: 10.5))
                 .lineLimit(1)
         }
         .foregroundColor(.secondary)
@@ -1584,8 +1623,8 @@ private struct LCSourceAppBanner: View {
                 Button {
                     CZFUpdateIgnore.setIgnored(version, for: app.bundleIdentifier)
                     ignoreRefresh.toggle()
-                    // 让源页顺带重算红点和「全部更新」名单（带
-                    // 5 分钟节流，不会频繁打网络）
+                    // 让源页顺带重算红点和「全部更新」名单
+                    // （本地计算，不联网刷源）
                     NotificationCenter.default.post(name: Notification.Name("CZFRefreshSourcesRequest"), object: nil)
                 } label: {
                     Label("忽略此版本", systemImage: "bell.slash")

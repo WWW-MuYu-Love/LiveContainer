@@ -417,10 +417,10 @@ struct LCSettingsView: View {
         return currentAppVersion
     }
 
-    // App 内更新检查（CZF）：查自家仓库的 update release，对比
-    // 本机 LCVersionInfo 里的短提交号；有新版不自己下载安装
-    // （侧载 App 换不了自己的包），跳 SideInstaller 🅥 / Seal
-    // 下载、签名、覆盖安装。逻辑原样从原「更新」子页搬过来。
+    // App 内更新检查（CZF）：查自家仓库的 update release，只
+    // 对比版本号、不对比构建尾号（用户定）；有新版不自己下载
+    // 安装（侧载 App 换不了自己的包），跳 SideInstaller 🅥 /
+    // Seal 下载、签名、覆盖安装。逻辑原样从原「更新」子页搬过来。
     private func startUpdateCheck() {
         guard !updateChecking else { return }
         updateChecking = true
@@ -433,9 +433,24 @@ struct LCSettingsView: View {
                     updateInfo = nil
                     updateStatusText = "检查失败，点一下重试"
                 case .success(let info):
-                    if let current = CZFUpdateCheck.currentCommit(), current == info.commit {
+                    // 只比版本号、不比版本号后面的构建尾号
+                    // （用户定）：同一个版本只是提交变了（比如
+                    // 仅改了发布脚本重新发布）不算新版，不再像
+                    // 之前那样误报「有新版：3.8.6 · f608a62」
+                    // （本机已是 3.8.6）。远端版本号比本机大才
+                    // 算有新版；远端正文没写版本号（旧正文）才
+                    // 回落到提交号对比。
+                    let isLatest: Bool
+                    if let remoteVersion = info.version {
+                        isLatest = remoteVersion.compare(currentAppVersion, options: .numeric) != .orderedDescending
+                    } else if let current = CZFUpdateCheck.currentCommit() {
+                        isLatest = current == info.commit
+                    } else {
+                        isLatest = false
+                    }
+                    if isLatest {
                         updateInfo = nil
-                        updateStatusText = "已是最新（\(current)）"
+                        updateStatusText = "已是最新（\(currentAppVersion)）"
                     } else {
                         updateInfo = info
                         // 用户定版：版本号排在提交号前面（与该
@@ -552,17 +567,22 @@ struct LCSettingsView: View {
 
     @ViewBuilder private var versionFooter: some View {
         VStack(spacing: 4) {
-            // 底部落款只剩一行（用户定）：「版本号 · 构建
-            // 尾号」居中（删掉「当前版本」字样、保留版本号、
-            // 加上构建尾号），「修改版」字样已删。连点 5 下
-            // 开开发者模式的手势随之挪到这行上——手势本身
-            // 别删，删了开发者模式就再无入口。
+            // 底部落款两行（用户定）：上面「丶沐雨丿修改
+            // 版」、下面「版本号·构建尾号」，都居中。修改版
+            // 行曾按用户指示在 3.8.6 删过，他后来又要恢复
+            // （问版本号上面那行怎么没了）。连点 5 下开开发
+            // 者模式的手势挂在整个页脚上，两行点哪行都算
+            // ——手势本身别删，删了开发者模式就再无入口。
+            Text("丶沐雨丿修改版")
+                .foregroundStyle(.gray)
+                .frame(maxWidth: .infinity, alignment: .center)
             Text(footerVersionText)
                 .foregroundStyle(.gray)
                 .frame(maxWidth: .infinity, alignment: .center)
-                .onTapGesture(count: 5) {
-                    sharedModel.developerMode = true
-                }
+        }
+        .contentShape(Rectangle())
+        .onTapGesture(count: 5) {
+            sharedModel.developerMode = true
         }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
             .background(Color(UIColor.systemGroupedBackground))
