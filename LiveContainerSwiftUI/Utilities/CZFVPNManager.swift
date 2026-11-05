@@ -1167,17 +1167,107 @@ public final class CZFVPNManager {
             guard let src = Bundle.main.url(forResource: "CZFProxy", withExtension: "dylib") else { return false }
             let srcData = try? Data(contentsOf: src)
             let destData = try? Data(contentsOf: dest)
+            var changed = false
             if destData != srcData {
                 try? fm.removeItem(at: dest)
                 try? fm.copyItem(at: src, to: dest)
-                return true
+                changed = true
             }
+            // 幻影依赖自愈：发布包里的 CZFProxy 只依赖系统
+            // 库，但用户实测机上副本被重签/重打包环节加了一
+            // 条 @loader_path/Frameworks/<哈希名>.dylib 的
+            // 加载命令，指向的文件根本不存在，游客 dlopen
+            // 插件直接报 Failed to load tweaks、代理不生效。
+            // 同步时扫一遍目标文件：凡是 @loader_path 相对依
+            // 赖在插件目录里找不到对应文件的，把那条加载命
+            // 令按 LCMachOUtils 去重同款做法废掉（cmd 改成
+            // 0x114515），随后照常单独补签。包内副本干净时
+            // 扫不到任何东西，行为与旧版一致。
+            if fm.fileExists(atPath: dest.path), Self.czfStripPhantomLoaderDeps(at: dest) {
+                changed = true
+            }
+            return changed
         } else {
             try? fm.removeItem(at: dest)
             try? fm.removeItem(at: strictMarker)
             try? fm.removeItem(at: endpointsFile)
         }
         return false
+    }
+
+    // 扫一个 Mach-O（thin 64 位或 fat，逐 slice）里的 dylib
+    // 加载命令：路径以 @loader_path/ 开头、且相对插件所在
+    // 目录解析后文件不存在的，判定为幻影依赖，把该命令的
+    // cmd 原地改成 0x114515（LCMachOUtils 去重重复依赖的
+    // 同款废法，dyld 跳过不认的命令号）。改动落盘并返回
+    // true；解析异常或没有幻影依赖返回 false、文件不动。
+    // 只查 @loader_path 相对依赖一条：系统库是绝对路径，
+    // 不在检查范围；自家插件除系统库外没有别的依赖，所
+    // 以任何 @loader_path 依赖缺文件都是外来加的。
+    private static func czfStripPhantomLoaderDeps(at fileURL: URL) -> Bool {
+        guard var bytes = try? [UInt8](Data(contentsOf: fileURL)), bytes.count >= 32 else { return false }
+        func u32le(_ off: Int) -> UInt32 {
+            UInt32(bytes[off]) | UInt32(bytes[off + 1]) << 8 | UInt32(bytes[off + 2]) << 16 | UInt32(bytes[off + 3]) << 24
+        }
+        func u32be(_ off: Int) -> UInt32 {
+            UInt32(bytes[off]) << 24 | UInt32(bytes[off + 1]) << 16 | UInt32(bytes[off + 2]) << 8 | UInt32(bytes[off + 3])
+        }
+        let folderPath = fileURL.deletingLastPathComponent().path
+        var patched = false
+        // 单个 thin 64 位 slice：base 是 slice 在文件中的偏移
+        func scanSlice(base: Int, size: Int) {
+            guard base + 32 <= bytes.count, u32le(base) == 0xfeedfacf else { return }
+            let ncmds = Int(u32le(base + 16))
+            var off = base + 32
+            let end = min(base + size, bytes.count)
+            for _ in 0..<ncmds {
+                guard off + 8 <= end else { return }
+                let cmd = u32le(off)
+                let cmdsize = Int(u32le(off + 4))
+                guard cmdsize >= 8, off + cmdsize <= end else { return }
+                if cmd == 0xc || cmd == 0x80000018 || cmd == 0x1f || cmd == 0x80000023 {
+                    // dylib_command：name.offset 在命令头 +8 处
+                    let nameOff = Int(u32le(off + 8))
+                    if nameOff >= 24, off + nameOff < off + cmdsize {
+                        var name = ""
+                        var p = off + nameOff
+                        while p < off + cmdsize, bytes[p] != 0 {
+                            name.append(Character(UnicodeScalar(bytes[p])))
+                            p += 1
+                        }
+                        if name.hasPrefix("@loader_path/") {
+                            let rest = String(name.dropFirst("@loader_path/".count))
+                            let target = (folderPath as NSString).appendingPathComponent(rest)
+                            if !FileManager.default.fileExists(atPath: target) {
+                                bytes[off] = 0x15
+                                bytes[off + 1] = 0x45
+                                bytes[off + 2] = 0x11
+                                bytes[off + 3] = 0x00
+                                patched = true
+                            }
+                        }
+                    }
+                }
+                off += cmdsize
+            }
+        }
+        if u32le(0) == 0xfeedfacf {
+            scanSlice(base: 0, size: bytes.count)
+        } else if u32be(0) == 0xcafebabe {
+            let narch = Int(u32be(4))
+            var aoff = 8
+            for _ in 0..<narch {
+                guard aoff + 20 <= bytes.count else { break }
+                let sliceOff = Int(u32be(aoff + 8))
+                let sliceSize = Int(u32be(aoff + 12))
+                scanSlice(base: sliceOff, size: sliceSize)
+                aoff += 20
+            }
+        } else {
+            return false
+        }
+        guard patched else { return false }
+        return (try? Data(bytes).write(to: fileURL)) != nil
     }
 
     // 豁免名单内容：节点列表里每条链接都按起核心的同一条路
@@ -1967,18 +2057,22 @@ public final class CZFVPNManager {
 
     /// 逐个节点测延迟（同步阻塞，必须在后台线程调）。
     /// 全量 sing-box 测速（测速只读，不动主核心）：
-    /// - 每个链接先过 CZFSingBoxConfig 配置生成校验（只生成
-    ///   不启动），生成失败记 conversionFailed（界面“不支
-    ///   持”，清理不删）；
-    /// - 生成成功的串行走临时实例探针（SOCKS 10927，一次
-    ///   只起一个）：起实例 → CZFSingBoxProbe 对本轮测速
-    ///   URL 的 host:80 做真实往返 → 停实例；
-    /// - 主核心在跑时临时实例不起（sing-box 同进程单服务），
-    ///   整轮记被拒，调用方按“核心占用”保留旧结果——界面
-    ///   层的测速流程本来就先停核心再测（用户定版规则）。
+    /// - 每个链接先过 CZFSingBoxConfig 配置生成校验（批量
+    ///   构建时顺带完成），生成失败记 conversionFailed
+    ///   （界面“不支持”，清理不删）；
+    /// - 生成成功的走批量临时实例：一台实例装下一片节点
+    ///   （每节点一个入站端口），只起停一次，片内 8 路并
+    ///   发用 CZFSingBoxProbe 对本轮测速 URL 的 host:80
+    ///   做真实往返。旧做法逐节点起停实例，起停开销占大
+    ///   半时间（用户报太慢）；批量配置被核心拒时整片回
+    ///   退旧串行逐节点探针兜底，结果语义不变；
+    /// - 主核心在跑时临时实例不起（sing-box 同进程单服
+    ///   务），整轮记被拒，调用方按“核心占用”保留旧结
+    ///   果——界面层的测速流程本来就先停核心再测（用户
+    ///   定版规则）。
     /// 探针目标 host 取本轮测速 URL 的 host（Cloudflare /
     /// gstatic / Apple 三轮各不相同）；失败节点随重试轮次
-    /// 重探（最坏 3×5 秒，串行探针的固有代价）。
+    /// 重探（每轮最坏 5 秒超时，并发下不再串行叠加）。
     private func runPingBatches(links: [String], url: String, phase: String = "", onProgress: ((Int, Int, String) -> Void)? = nil) -> (items: [CZFNodePingResult], batchRejected: Bool) {
         var items = [CZFNodePingResult?](repeating: nil, count: links.count)
         var batchRejected = false
@@ -1986,40 +2080,119 @@ public final class CZFVPNManager {
         vpnCoreLock.lock()
         let mainRunning = isRunning
         vpnCoreLock.unlock()
-        var probePending: [(index: Int, link: String)] = []
-        for (i, link) in links.enumerated() {
-            let normalized = Self.normalizedShareLink(link)
-            if (try? CZFSingBoxConfig.configJSON(for: normalized, socksPort: 10927, httpPort: nil)) != nil {
-                probePending.append((i, normalized))
-            } else {
-                items[i] = CZFNodePingResult(success: false, delay: 10000, conversionFailed: true)
-            }
+        let normalizedLinks = links.map { Self.normalizedShareLink($0) }
+        let probeHost = URLComponents(string: url)?.host ?? ""
+        let total = links.count
+        // 进度计数单独加锁数：并发探针回填时不能读 items
+        // 数组本身数（与写回填竞态），每个下标恰好回填一
+        // 次，计数与回填一一对应。
+        var progressDone = 0
+        let progressLock = NSLock()
+        func noteProgress() {
+            guard let onProgress else { return }
+            progressLock.lock()
+            progressDone += 1
+            let done = progressDone
+            progressLock.unlock()
+            DispatchQueue.main.async { onProgress(done, total, phase) }
         }
-        if !probePending.isEmpty {
+        enum BatchStart { case started, occupied, failed }
+        // 分片：一台实例最多装 64 个节点（端口 10927 起连
+        // 续分配），片内并发、片间串行（同进程单服务）。
+        let sliceSize = 64
+        var sliceStart = 0
+        while sliceStart < total {
+            let sliceEnd = min(sliceStart + sliceSize, total)
+            let sliceLinks = Array(normalizedLinks[sliceStart..<sliceEnd])
+            let (batchJSON, ports) = CZFSingBoxConfig.batchProbeConfigJSON(for: sliceLinks, basePort: 10927)
+            // 批量配置里缺席的链接 = 转换失败（与旧校验同义）。
+            for local in 0..<sliceLinks.count where ports[local] == nil {
+                items[sliceStart + local] = CZFNodePingResult(success: false, delay: 10000, conversionFailed: true)
+                noteProgress()
+            }
+            let validLocals = ports.keys.sorted()
+            if validLocals.isEmpty {
+                sliceStart = sliceEnd
+                continue
+            }
             if mainRunning {
                 batchRejected = true
-                for entry in probePending {
-                    items[entry.index] = CZFNodePingResult(success: false, delay: 10000)
+                for local in validLocals {
+                    items[sliceStart + local] = CZFNodePingResult(success: false, delay: 10000)
+                    noteProgress()
                 }
-            } else {
-                let probeHost = URLComponents(string: url)?.host ?? ""
-                for entry in probePending {
-                    if let result = probeSingBoxNode(link: entry.link, host: probeHost) {
-                        items[entry.index] = result
-                    } else {
-                        // 起探针时核心刚被别路起起来：记被拒，调用方
-                        // 按“核心占用”保留旧结果（pingAllNodes /
-                        // pingSingleNode 的 pingRejected 含轮末复核）。
-                        batchRejected = true
-                        items[entry.index] = CZFNodePingResult(success: false, delay: 10000)
-                    }
-                    if let onProgress {
-                        let done = items.compactMap { $0 }.count
-                        let total = links.count
-                        DispatchQueue.main.async { onProgress(done, total, phase) }
-                    }
-                }
+                sliceStart = sliceEnd
+                continue
             }
+            // 起批量实例：与 probeSingBoxNode 同款占用复核 +
+            // 持锁起实例，防主核心插进检查与启动之间的窗口。
+            var batchStart: BatchStart = .failed
+            if let batchJSON {
+                vpnCoreLock.lock()
+                if isRunning || CZFSingBoxCore.isServiceRunning {
+                    batchStart = .occupied
+                } else {
+                    do {
+                        try CZFSingBoxCore.start(configJSON: batchJSON)
+                        batchStart = .started
+                    } catch {
+                        batchStart = .failed
+                    }
+                }
+                vpnCoreLock.unlock()
+            }
+            switch batchStart {
+            case .occupied:
+                // 起探针时核心刚被别路起起来：记被拒，调用方
+                // 按“核心占用”保留旧结果（与旧单探针 nil 同义）。
+                batchRejected = true
+                for local in validLocals {
+                    items[sliceStart + local] = CZFNodePingResult(success: false, delay: 10000)
+                    noteProgress()
+                }
+            case .failed:
+                // 批量配置被核心拒：回退旧串行逐节点探针兜底。
+                for local in validLocals {
+                    if let result = probeSingBoxNode(link: sliceLinks[local], host: probeHost) {
+                        items[sliceStart + local] = result
+                    } else {
+                        batchRejected = true
+                        items[sliceStart + local] = CZFNodePingResult(success: false, delay: 10000)
+                    }
+                    noteProgress()
+                }
+            case .started:
+                // 8 路并发探针：探针是纯函数（端口+host 进、
+                // 结果出），并发安全；结果回填加锁串行化。
+                let group = DispatchGroup()
+                let sem = DispatchSemaphore(value: 8)
+                let fillLock = NSLock()
+                for local in validLocals {
+                    let port = ports[local]!
+                    group.enter()
+                    DispatchQueue.global(qos: .userInitiated).async {
+                        sem.wait()
+                        let r = CZFSingBoxProbe.probe(port: port, host: probeHost, timeout: 5)
+                        sem.signal()
+                        let mapped: CZFNodePingResult
+                        if r.success {
+                            mapped = CZFNodePingResult(success: true, delay: r.delayMs)
+                        } else if r.rejected {
+                            mapped = CZFNodePingResult(success: false, delay: 10000)
+                        } else {
+                            mapped = CZFNodePingResult(success: false, delay: 11000)
+                        }
+                        fillLock.lock()
+                        items[sliceStart + local] = mapped
+                        fillLock.unlock()
+                        noteProgress()
+                        group.leave()
+                    }
+                }
+                group.wait()
+                try? CZFSingBoxCore.stop()
+            }
+            sliceStart = sliceEnd
         }
         return (items.map { $0 ?? CZFNodePingResult(success: false, delay: 10000) }, batchRejected)
     }

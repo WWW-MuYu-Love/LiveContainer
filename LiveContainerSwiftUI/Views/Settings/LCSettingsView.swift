@@ -121,10 +121,10 @@ struct LCSettingsView: View {
             Form {
                 // 全局搜索开着时按段关键词过滤（搜索设置）：
                 // 段内标题命中才显示；没开/词空时全显示。
-                if czfSettingsSearchVisible("jit 证书 导入证书 删除证书 诊断 无jit jitless") { jitLessSection }
+                if czfSettingsSearchVisible("jit 证书 导入证书 删除证书 刷新证书 诊断 无jit jitless") { jitLessSection }
                 if czfSettingsSearchVisible("jit 地址 udid 启用器 sidejitserver stikdebug sidestore") { jitSection }
                 if czfSettingsSearchVisible("32 模拟器 emulator 翻译层 32位") { emulatorSection }
-                if czfSettingsSearchVisible("应用设置 多任务 外观 界面") { miscSection }
+                if czfSettingsSearchVisible("应用设置 多任务 多开 保活 外观 界面 动态取色 深色图标 静默 通知 边框 快捷栏 窗口 缩放 比例 分辨率 固定 后台 分身") { miscSection }
                 if czfSettingsSearchVisible("存储管理 数据管理 储存 备份 清理") { storageSection }
                 if czfSettingsSearchVisible("关于 github twitter 作者 livecontainer") { aboutSection }
                 if czfSettingsSearchVisible("更新 版本 检查更新 update") { updateSection }
@@ -244,7 +244,9 @@ struct LCSettingsView: View {
                         HStack {
                             LCSettingsIcon(systemName: "arrow.clockwise", color: .blue)
                             if certificateDataFound {
-                                Text("lc.settings.refreshCertificateFromStore %@".localizeWithFormat(storeName))
+                                // 用户令：行名就叫「刷新证书」，
+                                // 不带“来自 xxx”
+                                Text("刷新证书")
                             } else {
                                 Text("lc.settings.importCertificateFromStore %@".localizeWithFormat(storeName))
                             }

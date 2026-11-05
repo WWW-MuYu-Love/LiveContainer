@@ -33,12 +33,57 @@ struct LCTweakFolderView : View {
     // 传进来，子文件夹页共用同一份（同一对象）。
     @ObservedObject var searchContext: SearchContext
 
+    // 搜索结果重枚举计数：嵌套项不在 tweakItems 里，对它
+    // 的开关/删除/改名落盘后靠它逼 displayedTweakItems
+    // 重新枚举一次（见 setTweakEnabled 等）。
+    @State private var searchRefreshTick = 0
+
     // 本页搜索过滤（按文件名）：词为空时就是全量；删除
     // 按显示列表换算（见 deleteTweakItem）。
+    // 词非空时钻进文件夹递归找（用户点名）：原来只过滤
+    // 当前层，文件夹里的插件在上层永远搜不到。递归口径
+    // 与本层加载一致——文件夹 / .framework / .dylib 才收，
+    // 散文件不收；.framework 不往里钻，.disabled 文件夹
+    // 照常进（关着的插件也要能搜到再打开）。
     private var displayedTweakItems: [LCTweakItem] {
+        _ = searchRefreshTick
         let q = searchContext.query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !q.isEmpty else { return tweakItems }
-        return tweakItems.filter { $0.displayName.localizedCaseInsensitiveContains(q) }
+        var results: [LCTweakItem] = []
+        collectSearchMatches(in: baseUrl, query: q.lowercased(), into: &results)
+        return results
+    }
+
+    private func collectSearchMatches(in dir: URL, query: String, into results: inout [LCTweakItem]) {
+        let fm = FileManager.default
+        guard let names = try? fm.contentsOfDirectory(atPath: dir.path) else { return }
+        for name in names.sorted() {
+            let fileUrl = dir.appendingPathComponent(name)
+            var isFolder: ObjCBool = false
+            fm.fileExists(atPath: fileUrl.path, isDirectory: &isFolder)
+            let isEnabled = !name.hasSuffix(LCTweakItem.disabledSuffix)
+            let baseName = isEnabled ? name : String(name.dropLast(LCTweakItem.disabledSuffix.count))
+            let isFramework = isFolder.boolValue && baseName.hasSuffix(".framework")
+            let isTweak = !isFolder.boolValue && baseName.hasSuffix(".dylib")
+            if !isFolder.boolValue && !isTweak {
+                continue
+            }
+            let item = LCTweakItem(fileUrl: fileUrl, isFolder: isFolder.boolValue, isFramework: isFramework, isTweak: isTweak, isEnabled: isEnabled)
+            if item.displayName.lowercased().contains(query) {
+                results.append(item)
+            }
+            if isFolder.boolValue && !isFramework {
+                collectSearchMatches(in: fileUrl, query: query, into: &results)
+            }
+        }
+    }
+
+    // 搜索结果里非本层的项：父文件夹名，行上作小字区分
+    // 同名插件；本层项返回 nil（不显示）。
+    private func searchParentName(of item: LCTweakItem) -> String? {
+        let parent = item.fileUrl.deletingLastPathComponent()
+        guard parent.path != baseUrl.path else { return nil }
+        return parent.lastPathComponent
     }
     
     @State private var errorShow = false
@@ -163,6 +208,11 @@ struct LCTweakFolderView : View {
                             }
                         }
                         .opacity(tweakItem.isEnabled ? 1 : 0.4)
+                        if let parentName = searchParentName(of: tweakItem) {
+                            Text(parentName)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
                         if tweakItem.displayName != "TweakLoader.dylib" {
                             Toggle("", isOn: Binding(
                                 get: { tweakItem.isEnabled },
@@ -318,7 +368,9 @@ struct LCTweakFolderView : View {
         }
         let displayName = tweakItem.displayName
         let newName = enabled ? displayName : displayName + LCTweakItem.disabledSuffix
-        let newUrl = baseUrl.appendingPathComponent(newName)
+        // 目标目录取条目自己的父目录：原来写死 baseUrl，
+        // 本层项没区别，但搜索钻出的嵌套项会被挪到本层来
+        let newUrl = tweakItem.fileUrl.deletingLastPathComponent().appendingPathComponent(newName)
         let fm = FileManager()
         do {
             try fm.moveItem(at: tweakItem.fileUrl, to: newUrl)
@@ -328,6 +380,8 @@ struct LCTweakFolderView : View {
             return
         }
         guard let index = tweakItems.firstIndex(of: tweakItem) else {
+            // 嵌套项不在本层列表：靠计数逼搜索结果重枚举
+            searchRefreshTick += 1
             return
         }
         tweakItems[index] = LCTweakItem(fileUrl: newUrl, isFolder: tweakItem.isFolder, isFramework: tweakItem.isFramework, isTweak: tweakItem.isTweak, isEnabled: enabled)
@@ -339,12 +393,15 @@ struct LCTweakFolderView : View {
         // 直接拿去下标 tweakItems 在过滤时会删错文件。
         let targets = indexSet.map { displayedTweakItems[$0] }
         var indexToRemove : [Int] = []
+        var hasNestedTarget = false
         let fm = FileManager()
         do {
             for tweakItem in targets {
                 try fm.removeItem(at: tweakItem.fileUrl)
                 if let idx = tweakItems.firstIndex(of: tweakItem) {
                     indexToRemove.append(idx)
+                } else {
+                    hasNestedTarget = true
                 }
             }
         } catch {
@@ -360,6 +417,9 @@ struct LCTweakFolderView : View {
             }
         }
 
+        if hasNestedTarget {
+            searchRefreshTick += 1
+        }
         tweakItems.remove(atOffsets: IndexSet(indexToRemove))
     }
 
@@ -379,6 +439,8 @@ struct LCTweakFolderView : View {
         }
 
         guard let indexToRemove = indexToRemove else {
+            // 嵌套项不在本层列表（文件已删）：靠计数逼搜索结果重枚举
+            searchRefreshTick += 1
             return
         }
         tweakItems.remove(at: indexToRemove)
@@ -445,11 +507,10 @@ struct LCTweakFolderView : View {
         let indexToRename = tweakItems.firstIndex(where: { s in
             return s == tweakItem
         })
-        guard let indexToRename = indexToRename else {
-            return
-        }
         let newFileName = tweakItem.isEnabled ? newName : newName + LCTweakItem.disabledSuffix
-        let newUrl = self.baseUrl.appendingPathComponent(newFileName)
+        // 目标目录取条目自己的父目录（同 setTweakEnabled
+        // 的修法：原来写死 baseUrl，嵌套项改名会给挪层）
+        let newUrl = tweakItem.fileUrl.deletingLastPathComponent().appendingPathComponent(newFileName)
 
         let fm = FileManager()
         do {
@@ -459,9 +520,14 @@ struct LCTweakFolderView : View {
             errorInfo = error.localizedDescription
             return
         }
-        tweakItems.remove(at: indexToRename)
         let newTweakItem = LCTweakItem(fileUrl: newUrl, isFolder: tweakItem.isFolder, isFramework: tweakItem.isFramework, isTweak: tweakItem.isTweak, isEnabled: tweakItem.isEnabled)
-        tweakItems.insert(newTweakItem, at: indexToRename)
+        if let indexToRename = indexToRename {
+            tweakItems.remove(at: indexToRename)
+            tweakItems.insert(newTweakItem, at: indexToRename)
+        } else {
+            // 嵌套项不在本层列表：靠计数逼搜索结果重枚举
+            searchRefreshTick += 1
+        }
 
         if isRoot {
             let indexToRename2 = sharedModel.tweakFolderNames.firstIndex(of: tweakItem.displayName)

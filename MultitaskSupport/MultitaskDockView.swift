@@ -1166,33 +1166,57 @@ extension Notification.Name {
         return czfSchedMinOpenedUUIDs.contains(uuid)
     }
 
-    // 与快捷栏面板的「最小化打开」同一套路：已在运行直接最小化窗口；
-    // 未运行先直启该实例，再轮询等窗口出现后最小化。
+    // 与面板/卡片的最小化完全同款（用户令对齐）：UUID 取
+    // 选中容器 folderName（dataUUID 回落）——旧路只认
+    // dataUUID，多开实例的 dock 条目键是 folderName，查不
+    // 到运行中的窗口；未运行还走不带 multitask 的全屏直
+    // 启 + 轮询等条目，全屏条目键对不上、轮询等不到，定
+    // 时打开就成了全屏启动。当天豁免标记也按这个 uuid 记
+    //（上限检查与自动关豁免都是按条目 appUUID 查的，旧路
+    // 按 dataUUID 记，多开实例同样对不上）。
     private func czfMinimizeOpenApp(app: LCAppModel) {
-        guard let dataUUID = app.appInfo.dataUUID else { return }
-        czfMarkSchedMinOpened(uuid: dataUUID)
-        if apps.contains(where: { $0.appUUID == dataUUID }) {
-            minimizeWindow(uuid: dataUUID)
-            return
-        }
-        // 跳错修复：不再走只带包名的 URL（按包名取首个模型，
-        // 定时打开多开实例会拉起首个实例），改走模型直启。
-        Task {
-            try? await app.runApp(containerFolderName: dataUUID)
-        }
-        var attempts = 0
-        Timer.scheduledTimer(withTimeInterval: 0.3, repeats: true) { [weak self] timer in
-            attempts += 1
-            guard let self else {
-                timer.invalidate()
+        guard let uuid = app.uiSelectedContainer?.folderName ?? app.appInfo.dataUUID else { return }
+        czfMarkSchedMinOpened(uuid: uuid)
+        // 已在运行：归属对不上（共用容器的别的条目）不碰
+        // 它，落到下面启动分支起自己的窗口。归属先验相对
+        // 路径；路径缺失时用 bundleId 兜底验（同款）。
+        if let runningApp = apps.first(where: { $0.appUUID == uuid }) {
+            let belongsToOther: Bool
+            if let runningPath = runningApp.appInfo?.relativeBundlePath, !runningPath.isEmpty {
+                belongsToOther = runningPath != app.appInfo.relativeBundlePath
+            } else if let runningInfo = runningApp.appInfo {
+                belongsToOther = runningInfo.bundleIdentifier() != app.appInfo.bundleIdentifier()
+            } else {
+                belongsToOther = true
+            }
+            if !belongsToOther {
+                minimizeWindow(uuid: uuid)
                 return
             }
-            if self.apps.contains(where: { $0.appUUID == dataUUID }) {
-                self.minimizeWindow(uuid: dataUUID)
-                timer.invalidate()
-            } else if attempts >= 40 {
-                timer.invalidate()
+        }
+        // 未运行：先注册窗口出现回调，再以多任务方式启
+        // 动；窗口一出现（0.35 秒后）复验归属再最小化。
+        // 回调 30 秒超时兜底，不留野观察者。
+        let expectedPath = app.appInfo.relativeBundlePath
+        let expectedBundleId = app.appInfo.bundleIdentifier()
+        czfOnWindowAppeared(uuid: uuid, timeout: 30) { [weak self] in
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
+                guard let self, let entry = self.apps.first(where: { $0.appUUID == uuid }) else { return }
+                let owned: Bool
+                if let entryPath = entry.appInfo?.relativeBundlePath, !entryPath.isEmpty {
+                    owned = entryPath == expectedPath
+                } else if let entryInfo = entry.appInfo {
+                    owned = entryInfo.bundleIdentifier() == expectedBundleId
+                } else {
+                    owned = false
+                }
+                if owned {
+                    self.minimizeWindow(uuid: uuid)
+                }
             }
+        }
+        Task {
+            try? await app.runApp(multitask: true, containerFolderName: uuid)
         }
     }
 
@@ -3276,14 +3300,47 @@ struct AllAppsListView: View {
     }
     
     private func minimizeOpenApp(_ app: LCAppModel) {
-        guard let dataUUID = app.appInfo.dataUUID else { return }
-        // 如果已在运行，直接最小化它的窗口。归属先验相对
-        // 路径；条目 appInfo 按存盘 bundlePath 重建时没有
-        // relativeBundlePath，路径验不了，原来一律当别人的
-        // （?? true）落到启动分支，点最小化等于点启动——与
-        // 主列表卡片同款毛病、同款修法：路径缺失时用
-        // bundleId 兜底验，对不上才是别的 App 占着。
-        if let runningApp = dockManager.apps.first(where: { $0.appUUID == dataUUID }) {
+        // 与主列表卡片的最小化完全同款（用户令：快捷栏面板
+        // 这颗必须和卡片那颗一样）。以前这份是旧路：实例
+        // UUID 只取 dataUUID、未运行走 runApp 不带
+        // multitask 全屏直启、再按 dataUUID 轮询等条目——
+        // 多开实例的 dock 条目键是容器 folderName，只认
+        // dataUUID 查不到运行中的窗口；全屏直启的条目键也
+        // 对不上，轮询等不到，窗口就挂在全屏——点了等于
+        // 点启动（录屏实测：对未运行的 App 点最小化直接全
+        // 屏打开，还会弹“启动会终止多任务 App”的警告）。
+        // 改为照抄卡片 minimizeButtonTapped 的三段：UUID
+        // 取选中容器 folderName（dataUUID 回落）；已运行验
+        // 归属后直接最小化；未运行先注册窗口出现回调、再
+        // 以多任务方式启动，窗口一出现复验归属再最小化。
+        guard let uuid = app.uiSelectedContainer?.folderName ?? app.appInfo.dataUUID else {
+            // 容器删光：先启动（runApp 会重建容器），容器一
+            // 出现就重走正常路；20 次内没出现就停（启动失
+            // 败已由 runApp 侧报 reportLaunchError，不重复）。
+            Task {
+                do {
+                    try await app.runApp(multitask: true, containerFolderName: nil)
+                } catch {
+                    await MainActor.run { reportLaunchError(error.localizedDescription) }
+                }
+            }
+            var attempts = 0
+            Timer.scheduledTimer(withTimeInterval: 0.3, repeats: true) { timer in
+                attempts += 1
+                if (app.uiSelectedContainer?.folderName ?? app.appInfo.dataUUID) != nil {
+                    timer.invalidate()
+                    self.minimizeOpenApp(app)
+                } else if attempts >= 20 {
+                    timer.invalidate()
+                }
+            }
+            return
+        }
+        // 已在运行：归属对不上（共用容器的别的条目）不碰
+        // 它，落到下面启动分支起自己的窗口。归属先验相对
+        // 路径；路径缺失（条目按存盘 bundlePath 重建）时
+        // 用 bundleId 兜底验（与卡片同款）。
+        if let runningApp = dockManager.apps.first(where: { $0.appUUID == uuid }) {
             let belongsToOther: Bool
             if let runningPath = runningApp.appInfo?.relativeBundlePath, !runningPath.isEmpty {
                 belongsToOther = runningPath != app.appInfo.relativeBundlePath
@@ -3293,48 +3350,41 @@ struct AllAppsListView: View {
                 belongsToOther = true
             }
             if !belongsToOther {
-                dockManager.minimizeWindow(uuid: runningApp.appUUID)
+                dockManager.minimizeWindow(uuid: uuid)
                 closePanel()
                 return
             }
-        }        // 未运行：先启动，延迟后最小化窗口
-        closePanel()
-        // 跳错修复：未运行实例不再走只带包名的 URL（按包名取
-        // 首个模型，点的实例若非首个会被开错），改走模型直启；
-        // 下面按 dataUUID 轮询最小化的逻辑一字不动；上面运行
-        // 分支的归属守卫一字不动。
-        Task {
-            do {
-                try await app.runApp(containerFolderName: dataUUID)
-            } catch {
-                await MainActor.run { reportLaunchError(error.localizedDescription) }
-            }
         }
-        // 主线程轮询等待窗口出现，找到后最小化；只认归属对得上
-        // 的条目，别人的窗口占着 uuid 时直接停表、不碰它（自己
-        // 的新窗若拆容器会换 uuid，等这个 uuid 也等不来）。
-        // 轮询到期分不清失败还是拆容器换号，不在这里误报错。
-        // 归属验法与上面已运行分支同款：路径优先，路径缺失
-        // 用 bundleId 兜底。
+        // 未运行：照卡片/小窗口同款——先注册窗口出现回
+        // 调，再以多任务方式启动；窗口一出现（0.35 秒
+        // 后）复验归属再最小化。效果与手动「点小窗口 →
+        // 点黄色减号」一致：窗口以小窗出现、随即收进右侧
+        // dock。回调由 czfOnWindowAppeared 的 30 秒超时
+        // 兜底，窗口不出现就自动放弃，不留野观察者。
+        let expectedPath = app.appInfo.relativeBundlePath
         let expectedBundleId = app.appInfo.bundleIdentifier()
-        var attempts = 0
-        Timer.scheduledTimer(withTimeInterval: 0.3, repeats: true) { timer in
-            attempts += 1
-            if let entry = self.dockManager.apps.first(where: { $0.appUUID == dataUUID }) {
+        dockManager.czfOnWindowAppeared(uuid: uuid, timeout: 30) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                guard let entry = self.dockManager.apps.first(where: { $0.appUUID == uuid }) else { return }
                 let owned: Bool
                 if let entryPath = entry.appInfo?.relativeBundlePath, !entryPath.isEmpty {
-                    owned = entryPath == app.appInfo.relativeBundlePath
+                    owned = entryPath == expectedPath
                 } else if let entryInfo = entry.appInfo {
                     owned = entryInfo.bundleIdentifier() == expectedBundleId
                 } else {
                     owned = false
                 }
                 if owned {
-                    self.dockManager.minimizeWindow(uuid: dataUUID)
+                    self.dockManager.minimizeWindow(uuid: uuid)
                 }
-                timer.invalidate()
-            } else if attempts >= 20 {
-                timer.invalidate()
+            }
+        }
+        closePanel()
+        Task {
+            do {
+                try await app.runApp(multitask: true, containerFolderName: uuid)
+            } catch {
+                await MainActor.run { reportLaunchError(error.localizedDescription) }
             }
         }
     }

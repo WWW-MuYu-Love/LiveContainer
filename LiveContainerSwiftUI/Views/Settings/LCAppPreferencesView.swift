@@ -28,6 +28,18 @@ struct LCAppPreferencesView: View {
 
     @State private var notificationAuthStatus: UNAuthorizationStatus = .notDetermined
 
+    // 本页自己的搜索（与设置主页同款：本页字段写本页
+    // 词、按段关键词过滤）。原来这页没有搜索：主页搜
+    // 「多」只给得出本页入口，本页里的多任务/保活/界
+    // 面根本搜不到，这次补齐。
+    @State private var searchText = ""
+
+    private func czfPrefsSearchVisible(_ keywords: String) -> Bool {
+        let q = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !q.isEmpty else { return true }
+        return keywords.localizedCaseInsensitiveContains(q)
+    }
+
     @EnvironmentObject private var sharedModel : SharedModel
 
     private var notificationAuthText: String {
@@ -48,6 +60,7 @@ struct LCAppPreferencesView: View {
 
     var body: some View {
         Form {
+            if czfPrefsSearchVisible("边框 快捷图标 静默 切换 打开网页 严格隐藏 不签名 通知 权限 清除通知") {
             Section {
             Toggle(isOn: $frameShortIcon) {
                 VStack(alignment: .leading, spacing: 2) {
@@ -144,12 +157,14 @@ struct LCAppPreferencesView: View {
                 refreshNotificationAuth()
             }
             }
-            interfaceSection
-            multiLCSection
-            multitaskSection
-            keepAliveSection
+            }
+            if czfPrefsSearchVisible("界面 外观 动态取色 深色图标 颜色 横幅") { interfaceSection }
+            if czfPrefsSearchVisible("多开 分身 管理 multi 第二个") { multiLCSection }
+            if czfPrefsSearchVisible("多任务 multitask 窗口 缩放 比例 分辨率 固定 按钮 大小") { multitaskSection }
+            if czfPrefsSearchVisible("保活 后台 无声音频 音频") { keepAliveSection }
         }
         .navigationTitle("应用设置")
+        .searchable(text: $searchText, placement: .automatic, prompt: "搜索设置")
     }
 
     @ViewBuilder private var interfaceSection: some View {

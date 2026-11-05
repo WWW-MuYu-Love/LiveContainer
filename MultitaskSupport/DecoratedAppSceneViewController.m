@@ -30,6 +30,62 @@
 @end
 
 @implementation DecoratedAppSceneViewController
+
+// 窗口按钮大小（CZF）：标题栏三键（最小化/全屏/关闭）
+// 的符号点数，设置页「应用设置」里滑杆可调，键
+// CZFWindowButtonSize（标准 UserDefaults，与设置页
+// @AppStorage 同一本）；没设过 = 16（原来的大小），
+// 读到的值夹在 12–28 之间防脏数据。
+static CGFloat CZFWindowButtonPointSize(void) {
+    NSUserDefaults *d = NSUserDefaults.lcUserDefaults;
+    if ([d objectForKey:@"CZFWindowButtonSize"] == nil) {
+        return 16.0;
+    }
+    CGFloat v = [d doubleForKey:@"CZFWindowButtonSize"];
+    if (v < 12.0) v = 12.0;
+    if (v > 28.0) v = 28.0;
+    return v;
+}
+
+// 自适应缩放比例（CZF）：设置页「应用设置」的开关，键
+// CZFAdaptiveScaleEnabled（标准 UserDefaults，默认
+// 关）。开时窗口缩放按“窗口宽 ÷ 全屏宽”自动算（见
+// czfApplyAdaptiveScaleRatio）；关时新窗口用默认比例
+// CZFWindowScaleRatio（没设过 = 1.0）。都夹在标题菜
+// 单滑杆的 0.5–2.0 范围里。
+static BOOL CZFAdaptiveScaleEnabled(void) {
+    return [NSUserDefaults.lcUserDefaults boolForKey:@"CZFAdaptiveScaleEnabled"];
+}
+
+static CGFloat CZFDefaultScaleRatio(void) {
+    NSUserDefaults *d = NSUserDefaults.lcUserDefaults;
+    if ([d objectForKey:@"CZFWindowScaleRatio"] == nil) {
+        return 1.0;
+    }
+    CGFloat v = [d doubleForKey:@"CZFWindowScaleRatio"];
+    if (v < 0.5) v = 0.5;
+    if (v > 2.0) v = 2.0;
+    return v;
+}
+
+// 固定分辨率（CZF）：设置页「应用设置」的开关与宽高
+// （同一本标准 UserDefaults），与 AppSceneViewController
+// 里的同名静态函数是同一份设置的两处读法。逻辑尺寸由
+// 场景侧写死，这里只管画面等比适配进窗口。
+static BOOL CZFFixedResolutionEnabled(void) {
+    return [NSUserDefaults.lcUserDefaults boolForKey:@"CZFFixedResolutionEnabled"];
+}
+
+static CGSize CZFFixedResolutionSize(void) {
+    NSUserDefaults *d = NSUserDefaults.lcUserDefaults;
+    CGFloat w = [d doubleForKey:@"CZFFixedResolutionWidth"];
+    CGFloat h = [d doubleForKey:@"CZFFixedResolutionHeight"];
+    if (w < 100) w = 390;
+    if (h < 100) h = 844;
+    if (w > 2000) w = 2000;
+    if (h > 2000) h = 2000;
+    return CGSizeMake(w, h);
+}
 - (instancetype)initWindowName:(NSString*)windowName bundleId:(NSString*)bundleId dataUUID:(NSString*)dataUUID rootVC:(UIViewController*)rootVC {
     self = [super initWithNibName:nil bundle:nil];
     self.view = [[UIStackView alloc] initWithFrame:self.view.frame];
@@ -74,20 +130,20 @@
     }];
     
     UIImage *minimizeImage = [UIImage systemImageNamed:@"minus.circle"];
-    UIImageConfiguration *minimizeConfig = [UIImageSymbolConfiguration configurationWithPointSize:16.0 weight:UIImageSymbolWeightMedium];
+    UIImageConfiguration *minimizeConfig = [UIImageSymbolConfiguration configurationWithPointSize:CZFWindowButtonPointSize() weight:UIImageSymbolWeightMedium];
     minimizeImage = [minimizeImage imageWithConfiguration:minimizeConfig];
     UIBarButtonItem *minimizeButton = [[UIBarButtonItem alloc] initWithImage:minimizeImage style:UIBarButtonItemStylePlain target:self action:@selector(minimizeWindow)];
     minimizeButton.tintColor = [UIColor systemYellowColor];
     
     NSString *maximizeImageName = _isMaximized ? @"arrow.down.right.and.arrow.up.left.circle" : @"arrow.up.left.and.arrow.down.right.circle";
     UIImage *maximizeImage = [UIImage systemImageNamed:maximizeImageName];
-    UIImageConfiguration *maximizeConfig = [UIImageSymbolConfiguration configurationWithPointSize:16.0 weight:UIImageSymbolWeightMedium];
+    UIImageConfiguration *maximizeConfig = [UIImageSymbolConfiguration configurationWithPointSize:CZFWindowButtonPointSize() weight:UIImageSymbolWeightMedium];
     maximizeImage = [maximizeImage imageWithConfiguration:maximizeConfig];
     self.maximizeButton = [[UIBarButtonItem alloc] initWithImage:maximizeImage style:UIBarButtonItemStylePlain target:self action:@selector(maximizeWindow)];
     self.maximizeButton.tintColor = [UIColor systemGreenColor];
     
     UIImage *closeImage = [UIImage systemImageNamed:@"xmark.circle"];
-    UIImageConfiguration *closeConfig = [UIImageSymbolConfiguration configurationWithPointSize:16.0 weight:UIImageSymbolWeightMedium];
+    UIImageConfiguration *closeConfig = [UIImageSymbolConfiguration configurationWithPointSize:CZFWindowButtonPointSize() weight:UIImageSymbolWeightMedium];
     closeImage = [closeImage imageWithConfiguration:closeConfig];
     UIBarButtonItem *closeButton = [[UIBarButtonItem alloc] initWithImage:closeImage style:UIBarButtonItemStylePlain target:self action:@selector(closeWindow)];
     closeButton.tintColor = [UIColor systemRedColor];
@@ -366,13 +422,16 @@
     return containerView;
 }
 
-- (void)scaleSliderChanged:(_UIPrototypingMenuSlider *)slider {
-    self.scaleRatio = slider.value;
-    self.appSceneVC.scaleRatio = _scaleRatio;
+// 缩放比例的统一落点：标题菜单滑杆、自适应、默认比例
+// 三条路都走这里（原 scaleSliderChanged 的函数体原样
+// 搬过来，行为不变）。
+- (void)czfApplyScaleRatio:(CGFloat)ratio {
+    self.scaleRatio = ratio;
+    self.appSceneVC.scaleRatio = ratio;
     if(self.appSceneVC.usesHostingControllerAPI) {
-        self.appSceneVC.contentView.transform = CGAffineTransformMakeScale(_scaleRatio, _scaleRatio);
+        self.appSceneVC.contentView.transform = CGAffineTransformMakeScale(ratio, ratio);
     } else {
-        self.appSceneVC.contentView.layer.sublayerTransform = CATransform3DMakeScale(_scaleRatio, _scaleRatio, 1.0);
+        self.appSceneVC.contentView.layer.sublayerTransform = CATransform3DMakeScale(ratio, ratio, 1.0);
     }
     __weak typeof(self) weakSelf = self;
     [self.appSceneVC updateFrameWithSettingsBlock:^(UIMutableApplicationSceneSettings *settings) {
@@ -384,6 +443,90 @@
             settings.safeAreaInsetsPortrait = UIEdgeInsetsZero;
         }
     }];
+}
+
+- (void)scaleSliderChanged:(_UIPrototypingMenuSlider *)slider {
+    [self czfApplyScaleRatio:slider.value];
+}
+
+// 自适应：比例 = 当前窗口宽 ÷ 全屏（安全区内）宽——整
+// 个全屏界面等比缩进窗口里；最大化时自然算得 1.0。
+// 参照系与窗口状态还原的反算同一套（maxFrame）。
+- (void)czfApplyAdaptiveScaleRatio {
+    CGRect maxFrame = UIEdgeInsetsInsetRect(self.view.window.frame, self.view.window.safeAreaInsets);
+    if (CGRectIsEmpty(maxFrame)) {
+        maxFrame = UIScreen.mainScreen.bounds;
+    }
+    CGFloat w = self.view.frame.size.width;
+    if (maxFrame.size.width <= 0 || w <= 0) {
+        return;
+    }
+    CGFloat r = w / maxFrame.size.width;
+    if (r < 0.5) r = 0.5;
+    if (r > 2.0) r = 2.0;
+    [self czfApplyScaleRatio:r];
+}
+
+// 固定分辨率的画面适配：场景已按设置值出图（见
+// AppSceneViewController 的帧覆盖），这里把内容等比
+// 缩放、居中放进当前窗口内容区，多余处留边。变换的
+// 合成顺序是先缩放后平移，内容层锚点在左上 (0,0)，
+// 与 czfApplyScaleRatio 的纯缩放同一条路。
+- (void)czfApplyFixedResolution {
+    CGSize fixed = CZFFixedResolutionSize();
+    if (UIInterfaceOrientationIsLandscape(UIApp.statusBarOrientation)) {
+        fixed = CGSizeMake(fixed.height, fixed.width);
+    }
+    CGSize area = self.appSceneVC.view.bounds.size;
+    if (fixed.width <= 0 || fixed.height <= 0 || area.width <= 0 || area.height <= 0) {
+        return;
+    }
+    CGFloat s = MIN(area.width / fixed.width, area.height / fixed.height);
+    CGFloat tx = (area.width - fixed.width * s) / 2;
+    CGFloat ty = (area.height - fixed.height * s) / 2;
+    if (self.appSceneVC.usesHostingControllerAPI) {
+        self.appSceneVC.contentView.transform = CGAffineTransformScale(CGAffineTransformMakeTranslation(tx, ty), s, s);
+    } else {
+        self.appSceneVC.contentView.layer.sublayerTransform = CATransform3DScale(CATransform3DMakeTranslation(tx, ty, 0), s, s, 1.0);
+    }
+    __weak typeof(self) weakSelf = self;
+    [self.appSceneVC updateFrameWithSettingsBlock:^(UIMutableApplicationSceneSettings *settings) {
+        if(weakSelf.isMaximized) {
+            [weakSelf updateMaximizedSafeAreaWithSettings:settings];
+        } else {
+            settings.peripheryInsets = UIEdgeInsetsZero;
+            settings.safeAreaInsetsPortrait = UIEdgeInsetsZero;
+        }
+    }];
+}
+
+// 窗口尺寸落定后的统一重算入口（拖动结束、最大化/
+// 还原完成）：固定分辨率优先，其次自适应缩放；都没
+// 开就什么都不做，与现状一致。
+- (void)czfApplyScalePolicyForCurrentFrame {
+    if (CZFFixedResolutionEnabled()) {
+        [self czfApplyFixedResolution];
+    } else if (CZFAdaptiveScaleEnabled()) {
+        [self czfApplyAdaptiveScaleRatio];
+    }
+}
+
+// 窗口建好、frame 最终落定（场景初始化完成）时调一
+// 次：自适应开 → 按宽度算；关 → 默认比例（1.0 时与现
+// 状一致，跳过不多跑一轮设置更新）。
+- (void)czfApplyInitialScaleRatio {
+    if (CZFFixedResolutionEnabled()) {
+        [self czfApplyFixedResolution];
+        return;
+    }
+    if (CZFAdaptiveScaleEnabled()) {
+        [self czfApplyAdaptiveScaleRatio];
+    } else {
+        CGFloat r = CZFDefaultScaleRatio();
+        if (r != 1.0) {
+            [self czfApplyScaleRatio:r];
+        }
+    }
 }
 
 // 收键盘（宿主侧，三个层次缺一不可，上一轮只做了其中
@@ -553,12 +696,13 @@
         } completion:^(BOOL finished) {
             self.czfMaximizeAnimating = NO;
             [self czfSaveWindowState];
+            [self czfApplyScalePolicyForCurrentFrame];
             // 还原成小窗口后重算标题栏布局：2026-11-03 起标题栏
             // 不再随收起 + 最大化自动藏，最大化分支与还原分支
             // 都重算，布局与按钮图标保持同步。
             [self updateVerticalConstraints];
             UIImage *maximizeImage = [UIImage systemImageNamed:@"arrow.up.left.and.arrow.down.right.circle"];
-            UIImageConfiguration *maximizeConfig = [UIImageSymbolConfiguration configurationWithPointSize:16.0 weight:UIImageSymbolWeightMedium];
+            UIImageConfiguration *maximizeConfig = [UIImageSymbolConfiguration configurationWithPointSize:CZFWindowButtonPointSize() weight:UIImageSymbolWeightMedium];
             self.maximizeButton.image = [maximizeImage imageWithConfiguration:maximizeConfig];
         }];
     } else {
@@ -581,8 +725,9 @@
         } completion:^(BOOL finished) {
             self.czfMaximizeAnimating = NO;
             [self czfSaveWindowState];
+            [self czfApplyScalePolicyForCurrentFrame];
             UIImage *restoreImage = [UIImage systemImageNamed:@"arrow.down.right.and.arrow.up.left.circle"];
-            UIImageConfiguration *restoreConfig = [UIImageSymbolConfiguration configurationWithPointSize:16.0 weight:UIImageSymbolWeightMedium];
+            UIImageConfiguration *restoreConfig = [UIImageSymbolConfiguration configurationWithPointSize:CZFWindowButtonPointSize() weight:UIImageSymbolWeightMedium];
             self.maximizeButton.image = [restoreImage imageWithConfiguration:restoreConfig];
         }];
     }
@@ -634,6 +779,7 @@
             // 刷新 originalFrame，后续场景更新都以此为准
             [self czfApplySavedWindowStateIfNeeded];
             [self updateOriginalFrame];
+            [self czfApplyInitialScaleRatio];
             if (self.pidAvailableHandler) {
                 self.pidAvailableHandler(@(self.pid), nil);
             }
@@ -788,6 +934,7 @@
     if(_isMaximized) return;
     if (sender.state == UIGestureRecognizerStateEnded) {
         [self czfSaveWindowState];
+        [self czfApplyScalePolicyForCurrentFrame];
     }
 
     CGPoint point = [sender translationInView:self.view];

@@ -33,6 +33,8 @@ final class LCAppBannerRootView: UIView {
     private let vpnBadge = LCAppBannerBadgeView(symbolName: "globe")
     private let nameSpacer = UIView()
     private let nameStack = UIStackView()
+    private let badgeSpacer = UIView()
+    private let badgeStack = UIStackView()
     private let detailStack = UIStackView()
 
     override var intrinsicContentSize: CGSize {
@@ -83,19 +85,35 @@ final class LCAppBannerRootView: UIView {
         nameStack.alignment = .center
         nameStack.spacing = 8
         nameStack.addArrangedSubview(nameLabel)
-        nameStack.addArrangedSubview(vpnBadge)
-        nameStack.addArrangedSubview(sharedBadge)
-        nameStack.addArrangedSubview(jitBadge)
-        nameStack.addArrangedSubview(bit32Badge)
-        nameStack.addArrangedSubview(lockBadge)
         nameStack.addArrangedSubview(nameSpacer)
+
+        // 角标行（用户令）：VPN/共享/JIT/32 位/锁定角标从
+        // 名称同行挪到名称上方单独一行——同行时挤占名称宽
+        // 度，长名被截断（实测 YouTube 只剩“You...”）。角
+        // 标全隐藏时整行在 update 里关掉，不占高不占间距，
+        // 无角标的卡片布局与原来一字不差；各个角标的显隐
+        // 逻辑在 update 里不变。
+        badgeSpacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        badgeSpacer.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        badgeStack.translatesAutoresizingMaskIntoConstraints = false
+        badgeStack.axis = .horizontal
+        badgeStack.alignment = .center
+        badgeStack.spacing = 6
+        badgeStack.addArrangedSubview(vpnBadge)
+        badgeStack.addArrangedSubview(sharedBadge)
+        badgeStack.addArrangedSubview(jitBadge)
+        badgeStack.addArrangedSubview(bit32Badge)
+        badgeStack.addArrangedSubview(lockBadge)
+        badgeStack.addArrangedSubview(badgeSpacer)
 
         detailStack.translatesAutoresizingMaskIntoConstraints = false
         detailStack.axis = .vertical
         detailStack.alignment = .fill
         detailStack.distribution = .fill
         detailStack.spacing = 1
+        detailStack.addArrangedSubview(badgeStack)
         detailStack.addArrangedSubview(nameStack)
+        detailStack.setCustomSpacing(3, after: badgeStack)
         detailStack.addArrangedSubview(versionLabel)
         detailStack.addArrangedSubview(remarkLabel)
         detailStack.addArrangedSubview(containerLabel)
@@ -225,6 +243,8 @@ final class LCAppBannerRootView: UIView {
         lockBadge.backgroundColor = .systemGray
         bit32Badge.isHidden = !model.uiIs32bit
         bit32Badge.backgroundColor = .systemGray
+        // 角标行：全隐藏时整行关掉（不占高、不占间距）
+        badgeStack.isHidden = vpnBadge.isHidden && sharedBadge.isHidden && jitBadge.isHidden && bit32Badge.isHidden && lockBadge.isHidden
 
         visualBackgroundView.backgroundColor = dynamicColors
             ? mainColor.withAlphaComponent(0.5)

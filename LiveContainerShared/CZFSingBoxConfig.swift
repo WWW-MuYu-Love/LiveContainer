@@ -636,30 +636,7 @@ public enum CZFSingBoxConfig {
                 throw CZFSingBoxConfigError.invalidValue("httpPort")
             }
         }
-        let scheme = CZFSingBoxRouting.scheme(of: link)
-        let outbound: [String: Any]
-        switch scheme {
-        case "tuic":
-            outbound = try tuicOutbound(link: link)
-        case "vless":
-            outbound = try vlessOutbound(link: link)
-        case "vmess":
-            outbound = try vmessOutbound(link: link)
-        case "trojan":
-            outbound = try trojanOutbound(link: link)
-        case "ss", "shadowsocks":
-            outbound = try shadowsocksOutbound(link: link)
-        case "hysteria2", "hy2":
-            outbound = try hysteria2Outbound(link: link)
-        case "socks", "socks5":
-            outbound = try socksOutbound(link: link)
-        case "anytls":
-            outbound = try anytlsOutbound(link: link)
-        case "json":
-            outbound = try jsonOutbound(link: link)
-        default:
-            throw CZFSingBoxConfigError.unsupportedScheme(scheme)
-        }
+        let outbound = try outboundDict(for: link)
 
         var inbounds: [[String: Any]] = [[
             "type": "mixed",
@@ -694,5 +671,81 @@ public enum CZFSingBoxConfig {
             throw CZFSingBoxConfigError.encodingFailed
         }
         return json
+    }
+
+    /// 单条链接 → sing-box 出站字典（协议分发与 configJSON
+    /// 共用一份；各构建函数产出的 tag 都是 nodeTag，批量
+    /// 配置里由 batchProbeConfigJSON 改成各自的 tag）。
+    static func outboundDict(for link: String) throws -> [String: Any] {
+        let scheme = CZFSingBoxRouting.scheme(of: link)
+        switch scheme {
+        case "tuic":
+            return try tuicOutbound(link: link)
+        case "vless":
+            return try vlessOutbound(link: link)
+        case "vmess":
+            return try vmessOutbound(link: link)
+        case "trojan":
+            return try trojanOutbound(link: link)
+        case "ss", "shadowsocks":
+            return try shadowsocksOutbound(link: link)
+        case "hysteria2", "hy2":
+            return try hysteria2Outbound(link: link)
+        case "socks", "socks5":
+            return try socksOutbound(link: link)
+        case "anytls":
+            return try anytlsOutbound(link: link)
+        case "json":
+            return try jsonOutbound(link: link)
+        default:
+            throw CZFSingBoxConfigError.unsupportedScheme(scheme)
+        }
+    }
+
+    /// 批量测速配置（一台临时实例装下整批，不再逐节点起停
+    /// 实例——串行起停是旧测速慢的主因）：每个节点一条出站
+    /// （tag 改 probe-out-<序号>）、一个 mixed 入站
+    /// （basePort+序号），route 规则按入站 tag 一对一指到
+    /// 出站，其余流量 final=direct。单条转换失败不连累整
+    /// 批：返回的 ports 只含成功条目（键 = links 下标），
+    /// 缺席者由调用方按 conversionFailed 记。全失败或 links
+    /// 为空时 json 为 nil。
+    public static func batchProbeConfigJSON(for links: [String], basePort: Int) -> (json: String?, ports: [Int: Int]) {
+        var inbounds: [[String: Any]] = []
+        var outbounds: [[String: Any]] = [["type": "direct", "tag": "direct"]]
+        var rules: [[String: Any]] = []
+        var ports: [Int: Int] = [:]
+        for (i, link) in links.enumerated() {
+            guard let outbound = try? outboundDict(for: link) else { continue }
+            let port = basePort + i
+            guard (1...65535).contains(port) else { continue }
+            var out = outbound
+            out["tag"] = "probe-out-\(i)"
+            outbounds.append(out)
+            inbounds.append([
+                "type": "mixed",
+                "tag": "probe-in-\(i)",
+                "listen": "127.0.0.1",
+                "listen_port": port,
+            ])
+            rules.append(["inbound": ["probe-in-\(i)"], "outbound": "probe-out-\(i)"])
+            ports[i] = port
+        }
+        guard !ports.isEmpty else { return (nil, [:]) }
+        let root: [String: Any] = [
+            "log": ["level": "warning"],
+            "dns": [
+                "servers": [["tag": "local", "type": "local"]],
+                "final": "local",
+            ],
+            "inbounds": inbounds,
+            "outbounds": outbounds,
+            "route": ["rules": rules, "final": "direct"],
+        ]
+        guard let data = try? JSONSerialization.data(withJSONObject: root, options: [.sortedKeys]),
+              let json = String(data: data, encoding: .utf8) else {
+            return (nil, [:])
+        }
+        return (json, ports)
     }
 }

@@ -209,8 +209,24 @@ struct LCAppSettingsView: View {
         let cal = Calendar.current
         let minutes = cal.component(.hour, from: schedMinTime) * 60 + cal.component(.minute, from: schedMinTime)
         defaults.set(minutes, forKey: "CZFSchedMinMinutes-\(bid)")
-        // 改设置后清掉今日已开标记，让新时间今天就能生效
-        defaults.removeObject(forKey: "CZFSchedMinLastDate-\(bid)")
+        // 今日已开标记按新时间与现在的关系处理：新时间还
+        // 没到（在将来）→ 清掉标记，新时间今天照常生效
+        // （含“今天已在旧时间开过、改到更晚”的情形）；新
+        // 时间今天已经过了 → 把今天记成已处理，第一次触
+        // 发是明天到点。旧写法无条件清标记：保存时 kick
+        // 会立刻补检一次，设定时间只要已过（如默认 8:00
+        // 在晚上才开开关）就当场把 App 打开了——用户实
+        // 测“一点定时打开它就启动”。LC 到点时没开着、
+        // 后来启动时补开走的是管理器起表时的检查，那时
+        // 标记是昨天或没有，不受这条影响。
+        let nowMinutes = cal.component(.hour, from: Date()) * 60 + cal.component(.minute, from: Date())
+        if minutes > nowMinutes {
+            defaults.removeObject(forKey: "CZFSchedMinLastDate-\(bid)")
+        } else {
+            let dayFmt = DateFormatter()
+            dayFmt.dateFormat = "yyyyMMdd"
+            defaults.set(dayFmt.string(from: Date()), forKey: "CZFSchedMinLastDate-\(bid)")
+        }
         // 定时器只在有定时任务时跑：开定时后把它踢起来，
         // 否则之前停掉的表不会自己恢复；关定时不踢，下一轮
         // 检查发现无定时会自己停表。MultitaskDockManager
