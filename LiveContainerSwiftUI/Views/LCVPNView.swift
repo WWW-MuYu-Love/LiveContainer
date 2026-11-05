@@ -578,10 +578,14 @@ struct LCVPNView: View {
                 // 订阅组信息行：流量与到期，紧挨组名（同列
                 // 第二行，不再隔着按钮行高留空）。
                 if group.upload != nil || group.download != nil || group.total != nil || group.expire != nil {
+                    // 字再缩小（用户：11 太大、到期日被省略）：
+                    // 10 号 + 允许再缩到 0.75 倍，宁可字小也
+                    // 别先砍内容，缩到底才走省略号。
                     groupInfoLine(group)
-                        .font(.system(size: 11))
+                        .font(.system(size: 10))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
+                        .minimumScaleFactor(0.75)
                 }
             }
             Spacer()
@@ -1322,10 +1326,13 @@ private struct CZFVPNNodeLabel: View {
                     .font(.system(size: 13.5, weight: .semibold))
                     .foregroundStyle(.primary)
                     .lineLimit(1)
+                // 协议行字再缩小（用户：不要省略太多）：
+                // 10.5 → 9.5，再允许缩到 0.8 倍兜底。
                 Text(protoLine)
-                    .font(.system(size: 10.5))
+                    .font(.system(size: 9.5))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
+                    .minimumScaleFactor(0.8)
             }
             Spacer()
             pingStatus

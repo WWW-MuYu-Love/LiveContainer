@@ -29,14 +29,14 @@ struct LCTweakFolderView : View {
     @State var tweakItems : [LCTweakItem]
     private var isRoot : Bool
     @EnvironmentObject private var sharedModel: SharedModel
-    @ObservedObject private var globalSearch = CZFSearchCenter.shared
+    // 本页搜索词：根视图自己的系统搜索框写它，经 init
+    // 传进来，子文件夹页共用同一份（同一对象）。
+    @ObservedObject var searchContext: SearchContext
 
-    // 全局搜索过滤（按文件名）：词为空时就是全量；删除
-    // 按显示列表换算（见 deleteTweakItem）。过滤只看词、
-    // 不看全局开关——开关在系统搜索会话里会闪烁，拿它
-    // 当门出现过打了字不过滤（3.8.8 录屏实测）。
+    // 本页搜索过滤（按文件名）：词为空时就是全量；删除
+    // 按显示列表换算（见 deleteTweakItem）。
     private var displayedTweakItems: [LCTweakItem] {
-        let q = globalSearch.query.trimmingCharacters(in: .whitespacesAndNewlines)
+        let q = searchContext.query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !q.isEmpty else { return tweakItems }
         return tweakItems.filter { $0.displayName.localizedCaseInsensitiveContains(q) }
     }
@@ -68,9 +68,10 @@ struct LCTweakFolderView : View {
     @State private var exportItems: [URL] = []
     @State private var showExportSheet = false
     
-    init(baseUrl: URL, isRoot: Bool = false) {
+    init(baseUrl: URL, isRoot: Bool = false, searchContext: SearchContext = SearchContext()) {
         _baseUrl = State(initialValue: baseUrl)
         self.isRoot = isRoot
+        self.searchContext = searchContext
         var tmpTweakItems : [LCTweakItem] = []
         let fm = FileManager()
         do {
@@ -137,7 +138,7 @@ struct LCTweakFolderView : View {
                                 // hidden link so the row navigates without the toggle triggering it
                                 ZStack {
                                     NavigationLink {
-                                        LCTweakFolderView(baseUrl: tweakItem.fileUrl, isRoot: false)
+                                        LCTweakFolderView(baseUrl: tweakItem.fileUrl, isRoot: false, searchContext: searchContext)
                                     } label: {
                                         EmptyView()
                                     }
@@ -544,6 +545,10 @@ struct LCTweaksView: View {
     // 转共享后文件夹搬去了共享处，不切过去就永远看不到、也开不回来。
     @State private var showShared = false
 
+    // 本页搜索词：页面自己的系统搜索框写它，传给文件夹
+    // 视图（含子文件夹页）过滤。
+    @StateObject private var searchContext = SearchContext()
+
     var body: some View {
         NavigationView {
             VStack(spacing: 0) {
@@ -554,12 +559,12 @@ struct LCTweaksView: View {
                 .pickerStyle(.segmented)
                 .padding(.horizontal)
                 .padding(.vertical, 8)
-                LCTweakFolderView(baseUrl: showShared ? LCPath.lcGroupTweakPath : LCPath.tweakPath, isRoot: true)
+                LCTweakFolderView(baseUrl: showShared ? LCPath.lcGroupTweakPath : LCPath.tweakPath, isRoot: true, searchContext: searchContext)
                     .id(showShared)
-                    .czfPullToSearch()
             }
         }
         .navigationViewStyle(StackNavigationViewStyle())
+        .searchable(text: $searchContext.query, placement: .automatic, prompt: "搜索模块")
 
     }
 }

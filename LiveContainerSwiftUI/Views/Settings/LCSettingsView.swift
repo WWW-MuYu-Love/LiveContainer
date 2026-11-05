@@ -60,13 +60,13 @@ struct LCSettingsView: View {
     @State private var updateChecking = false
     @State private var updateInfo: CZFUpdateInfo?
 
-    @ObservedObject private var globalSearch = CZFSearchCenter.shared
+    // 本页搜索词：页面自己的系统搜索框写它。
+    @State private var searchText = ""
 
-    // 全局搜索过滤设置主页：词命中某段的关键词才显示
-    // 那段；词为空时全显示。只看词、不看全局开关（同模
-    // 块页注释：开关会闪烁，不能当过滤的门）。
+    // 本页搜索过滤设置主页：词命中某段的关键词才显示
+    // 那段；词为空时全显示。
     private func czfSettingsSearchVisible(_ keywords: String) -> Bool {
-        let q = globalSearch.query.trimmingCharacters(in: .whitespacesAndNewlines)
+        let q = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !q.isEmpty else { return true }
         return keywords.localizedCaseInsensitiveContains(q)
     }
@@ -132,7 +132,7 @@ struct LCSettingsView: View {
                 if czfSettingsSearchVisible("开发者 注入 调试 developer 模式") { developerSection }
             }
             .navigationBarTitle("lc.tabView.settings".loc)
-            .czfPullToSearch()
+            .searchable(text: $searchText, placement: .automatic, prompt: "搜索设置")
             .alert("lc.common.error".loc, isPresented: $errorShow){
             } message: {
                 Text(errorInfo)

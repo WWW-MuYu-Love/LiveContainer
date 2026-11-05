@@ -572,21 +572,10 @@ struct LCSourcesView: View {
     @StateObject private var viewModel = AltStoreSourcesViewModel()
     @State private var errorMessage: String?
     @State private var sourcePendingRemoval: AltStoreSourcesViewModel.SourceItem?
+    // 本页搜索（回到最初，与 App 页同款）：页面自己的
+    // 系统搜索框写这份 searchContext，过滤读它（0.2 秒
+    // 防抖），规则不变。
     @ObservedObject public var searchContext: SearchContext = SearchContext()
-    @ObservedObject private var globalSearch = CZFSearchCenter.shared
-    @Environment(\.czfInSearchTab) private var czfInSearchTab
-
-    // 本页自己的搜索栏关不关：嵌在搜索标签里关（历来如
-    // 此）；iOS 26 起在正页上也关——底部系统搜索标签是
-    // 唯一的搜索入口，页面上方再挂一个搜索栏和它冲突
-    // （用户定，与 App 页同款）。搜索词仍经全局中心同步
-    // 进 searchContext 照常过滤。旧系统没有搜索标签，
-    // 本页搜索栏保留不动。
-    private var czfOwnSearchDisabled: Bool {
-        if czfInSearchTab { return true }
-        if #available(iOS 26.0, *) { return true }
-        return false
-    }
     @State private var expandedSources: Set<URL> = []
     @State private var isManagingSources = false
     @State private var isBatchMode = false
@@ -783,18 +772,7 @@ struct LCSourcesView: View {
                 )
             }
         }
-        .czfSearchable(text: $searchContext.query, placement: .navigationBarDrawer(displayMode: .always), disabled: czfOwnSearchDisabled)
-        .czfPullToSearch()
-        .onChange(of: globalSearch.query) { newValue in
-            // 全局搜索的词无条件同步进本页 searchContext，
-            // 走现成过滤，与 App 页同款：全局词只由搜索框
-            // 产生（进搜索标签时先清空），它变了就是用户
-            // 当前的搜意。以前还要全局开关开着才同步、关
-            // 了就清本地词——系统搜索会话里开关一闪烁，词
-            // 就被挡住或清掉，实测打了字不过滤（3.8.8 录
-            // 屏）。过滤与否只看词空不空，不再看开关。
-            searchContext.query = newValue
-        }
+        .searchable(text: $searchContext.query, placement: .navigationBarDrawer(displayMode: .always))
 
         .onAppear {
             refreshUpdatableCache()

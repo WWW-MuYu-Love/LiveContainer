@@ -117,23 +117,11 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
     
     @State private var isViewAppeared = false
     
+    // 本页搜索（回到最初）：页面自己的系统搜索框写这份
+    // searchContext，名称过滤和浏览器行（打开网址/在网
+    // 上搜索，进内置浏览器、IPA 直链下载安装）都挂在它
+    // 上面，0.2 秒防抖。
     @ObservedObject var searchContext: SearchContext = SearchContext()
-    @ObservedObject private var globalSearch = CZFSearchCenter.shared
-    @Environment(\.czfInSearchTab) private var czfInSearchTab
-
-    // 本页自己的搜索栏关不关：嵌在搜索标签里关（历来如
-    // 此）；iOS 26 起在正页上也关——底部系统搜索标签是
-    // 唯一的搜索入口，页面上方再挂一个搜索栏和它冲突
-    // （用户定）。搜索词仍经全局中心同步进 searchContext，
-    // 名称过滤和浏览器行（打开网址/在网上搜索，进内置浏
-    // 览器、IPA 直链下载安装）都挂在 searchContext 上，
-    // 在搜索标签里照常工作。旧系统没有搜索标签，本页
-    // 搜索栏保留不动。
-    private var czfOwnSearchDisabled: Bool {
-        if czfInSearchTab { return true }
-        if #available(iOS 26.0, *) { return true }
-        return false
-    }
     var sortedApps: [LCAppModel] {
         return sharedAppSortManager.sortedApps
     }
@@ -695,18 +683,7 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
                 Task { await launchAppWithBundleId(bundleId: bundleId, container: nil) }
             }
         }
-        .czfSearchable(text: $searchContext.query, placement: .automatic, disabled: czfOwnSearchDisabled)
-        .czfPullToSearch()
-        .onChange(of: globalSearch.query) { newValue in
-            // 全局搜索的词无条件同步进本页 searchContext，
-            // 走现成过滤/防抖：全局词只由搜索框产生（进搜
-            // 索标签时先清空），它变了就是用户当前的搜意。
-            // 以前还要全局开关开着才同步、关了就清本地词——
-            // 系统搜索会话里开关一闪烁，词就被挡在门外或
-            // 被清掉，实测打了字列表不过滤（3.8.8 录屏）。
-            // 过滤与否只看词空不空，不再看开关。
-            searchContext.query = newValue
-        }
+        .searchable(text: $searchContext.query, placement: .automatic)
 
     }
     
