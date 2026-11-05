@@ -9,7 +9,16 @@
 # 需要环境变量 GH_TOKEN（在 Codemagic 里配的加密变量；细粒度
 # PAT，只有本仓库 Contents 写权限）。未设置时跳过并以成功退出，
 # 不让发版配置缺失拖垮构建产物本身。
-set -uo pipefail
+set -o pipefail
+# 注意：故意不开 set -u。构建 #5/#6/#8/#9 四次都死在
+# 「MSG: unbound variable」，且每次失败行都是展开 $MSG 的
+# echo——尽管脚本在前面已给 MSG 绑了默认值（#8/#9 的脚本
+# 第 31 行就有 MSG="（无提交信息）"，本地与远端逐字节一致，
+# 本地 bash 5.2 实测该段运行正常）。runner 上为何仍报未绑定
+# 始终未能实证（Codemagic 日志只有那一行报错，无其他输出）。
+# 结论：不再试图满足 set -u，直接撤掉 nounset——没有 set -u
+# 就不可能再出现 unbound variable 这一类失败；关键变量另在
+# 展开处加 ${VAR:-} 兜底，逻辑不依赖 set -u。
 
 if [ -z "${GH_TOKEN:-}" ]; then
   echo "GH_TOKEN 未设置，跳过自动发版（IPA 仍在 Codemagic artifacts 里）"
@@ -21,12 +30,9 @@ API="https://api.github.com/repos/$REPO"
 UPLOADS="https://uploads.github.com/repos/$REPO"
 AUTH=(-H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28")
 
-# 变量先全部给默认值再逐个赋值：构建 #5、#6 两次实测都
-# 死在 line 34 的 echo 报 MSG unbound——赋值明明在前面，
-# 说明 runner 上某条命令替换会让整段赋值失效（git 在
-# Codemagic 检出目录可能因 dubious ownership 整体不可用）。
-# 先绑默认值，set -u 就永远有值可展开；提交号优先用
-# Codemagic 自带的 CM_COMMIT，git 只作兜底。
+# 变量先全部给默认值再逐个赋值；提交号优先用 Codemagic
+# 自带的 CM_COMMIT，git 只作兜底（git 在 Codemagic 检出
+# 目录可能因 dubious ownership 不可用）。
 SHA=""
 MSG="（无提交信息）"
 VER=""
@@ -40,7 +46,7 @@ if [ -z "$VER" ]; then
 fi
 BUILD_LINK="${CM_BUILD_URL:-https://codemagic.io}"
 export SHA MSG VER BUILD_LINK
-echo "发版目标：$REPO 版本 $VER 提交 ${SHA:0:7}（$MSG）"
+echo "发版目标：$REPO 版本 ${VER:-} 提交 ${SHA:0:7}（${MSG:-（无提交信息）}）"
 
 release_id() {
   curl -s "${AUTH[@]}" "$API/releases/tags/$1" | python3 -c "import json,sys
@@ -86,7 +92,7 @@ replace_assets() {
 # ---- 0) 生成 AltStore 源 JSON（与 GitHub nightly 同一步，失败不阻断发版）
 export NIGHTLY_LINK="$BUILD_LINK"
 export commit_sha="$SHA"
-export commit_msg="$MSG"
+export commit_msg="${MSG:-（无提交信息）}"
 export GITHUB_TOKEN="$GH_TOKEN"
 python3 -m pip install --quiet requests 2>/dev/null || true
 python3 .github/update_json.py || echo "警告：update_json.py 失败，apps_nightly.json 用仓库内现版"
