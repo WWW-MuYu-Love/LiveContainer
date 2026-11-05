@@ -32,9 +32,9 @@ struct LCMultitaskSettingView: View {
     // 标准 UserDefaults，与那边 lcUserDefaults 同一本）
     @AppStorage("CZFRestoreWindowState") var restoreWindowState = true
     // 边缘手势（CZF）：总开关 + 灵敏度三档，宿主判定侧读取；
-    // 默认关（Campbell 2026-11-06 令）：键不存在 = 关，手动
-    // 打开过存下的开值不受影响
-    @AppStorage("CZFEdgeGesturesEnabled") var edgeGesturesEnabled = false
+    // 默认开（Campbell 2026-11-06 令改回）：键不存在 = 开，
+    // 手动关掉存下的关值不受影响
+    @AppStorage("CZFEdgeGesturesEnabled") var edgeGesturesEnabled = true
     @AppStorage("CZFEdgeSensitivity") var edgeSensitivity = 1
     // 最小化省电（CZF）：两条都有开关，默认都开，关了即回旧行为。
     // 键在 appGroup，ObjC 侧（Decorated）和 Swift 侧（DockManager）

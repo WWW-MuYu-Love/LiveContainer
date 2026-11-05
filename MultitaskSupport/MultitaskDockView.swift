@@ -1469,10 +1469,12 @@ extension Notification.Name {
         default: return 1.0
         }
     }
-    // 边缘手势总开关（设置页控制，键不存在 = 关；
-    // Campbell 2026-11-06 令改默认关，此前为默认开）
+    // 边缘手势总开关（设置页控制，键不存在 = 开；
+    // Campbell 2026-11-06 先令改默认关、同日又令改回
+    // 默认开：没存过值按开算，手动关掉存下的关值保留）
     static var czfEdgeGesturesEnabled: Bool {
         let d = UserDefaults.standard
+        if d.object(forKey: "CZFEdgeGesturesEnabled") == nil { return true }
         return d.bool(forKey: "CZFEdgeGesturesEnabled")
     }
     private var globalSwipeStartInBand: Bool = true
