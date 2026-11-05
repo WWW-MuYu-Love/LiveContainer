@@ -26,7 +26,7 @@ Crowdin Project: [![Crowdin](https://badges.crowdin.net/livecontainer/localized.
 
 
 # Installation
-**LiveContainer comes with a standalone version and a version with built-in SideStore. [Please read the install guide here](https://livecontainer.github.io/docs/installation)**
+**This fork ships the standalone version only (the version with built-in SideStore was retired). [Please read the install guide here](https://livecontainer.github.io/docs/installation)**
 
 If you encounter any issue please [read our FAQ here](https://livecontainer.github.io/docs/faq)
 
@@ -63,12 +63,6 @@ Nightly
 </td>
 </tr>
 </table>
-
-### LiveContainer+SideStore
-|Stable|Nightly|
-|:-:|:-:|
-|<a href="https://github.com/LiveContainer/LiveContainer/releases/latest/download/LiveContainer+SideStore.ipa" target="_blank"><img src="https://raw.githubusercontent.com/StikStore/altdirect/refs/heads/main/assets/png/Download_Blue.png" alt="Download .ipa" width="200" /></a>|<a href="https://github.com/LiveContainer/LiveContainer/releases/download/nightly/LiveContainer+SideStore.ipa" target="_blank"><img src="https://raw.githubusercontent.com/StikStore/altdirect/refs/heads/main/assets/png/Download_Blue.png" alt="Download .ipa" width="200" /></a>|
-
 
 ## Requirements
 
