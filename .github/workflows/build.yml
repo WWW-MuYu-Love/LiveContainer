@@ -176,4 +176,3 @@ jobs:
           files: |
             ${{ needs.build.outputs.artifact }}
             .github/apps_nightly.json
-
