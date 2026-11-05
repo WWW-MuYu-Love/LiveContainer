@@ -1,7 +1,8 @@
 # Codemagic 构建线（与 GitHub Actions 并行的第三个池子，2026-11-05 加）
 # 步骤与 .github/workflows/build.yml 的 Build job 一一对应：
 # 编 Libbox → xcodebuild archive → 编三个内置 dylib → build_github.sh 打包。
-# 产物两个 IPA 作为 Codemagic artifacts 留存，发布仍走 GitHub Release 流程。
+# 产物只有单版本 IPA（二合一版 2026-11-06 废弃）作为 Codemagic
+# artifacts 留存，发布仍走 GitHub Release 流程。
 workflows:
   livecontainer-ios:
     name: LiveContainer iOS
@@ -70,4 +71,3 @@ workflows:
           bash .github/publish_codemagic.sh
     artifacts:
       - LiveContainer.ipa
-      - LiveContainer+SideStore.ipa

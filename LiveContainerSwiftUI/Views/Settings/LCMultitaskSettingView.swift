@@ -9,8 +9,13 @@ import SwiftUI
 
 struct LCMultitaskSettingView: View {
     @AppStorage("LCMultitaskMode", store: LCUtils.appGroupUserDefault) var multitaskMode: MultitaskMode = .virtualWindow
-    @AppStorage("LCLaunchInMultitaskMode") var launchInMultitaskMode = false
-    @AppStorage("LCLaunchMultitaskMaximized") var launchMultitaskMaximized = false
+    // 默认值 2026-11-06 由 Campbell 改为开：没设过 = 开；
+    // 用户亲手关过（键已存 false）仍按关算。读取侧
+    // LCAppModel.shouldLaunchInMultitaskMode 与
+    // DecoratedAppSceneViewController 的 _isMaximized
+    // 初始值同改为「键不存在 = 开」，三处保持一致。
+    @AppStorage("LCLaunchInMultitaskMode") var launchInMultitaskMode = true
+    @AppStorage("LCLaunchMultitaskMaximized") var launchMultitaskMaximized = true
     @AppStorage("LCMultitaskBottomWindowBar", store: LCUtils.appGroupUserDefault) var bottomWindowBar = false
     @AppStorage("LCAutoEndPiP", store: LCUtils.appGroupUserDefault) var autoEndPiP = false
     @AppStorage("LCSkipTerminatedScreen", store: LCUtils.appGroupUserDefault) var skipTerminatedScreen = false
@@ -26,8 +31,10 @@ struct LCMultitaskSettingView: View {
     // 下次打开自动还原（DecoratedAppSceneViewController 读写，
     // 标准 UserDefaults，与那边 lcUserDefaults 同一本）
     @AppStorage("CZFRestoreWindowState") var restoreWindowState = true
-    // 边缘手势（CZF）：总开关 + 灵敏度三档，宿主判定侧读取
-    @AppStorage("CZFEdgeGesturesEnabled") var edgeGesturesEnabled = true
+    // 边缘手势（CZF）：总开关 + 灵敏度三档，宿主判定侧读取；
+    // 默认关（Campbell 2026-11-06 令）：键不存在 = 关，手动
+    // 打开过存下的开值不受影响
+    @AppStorage("CZFEdgeGesturesEnabled") var edgeGesturesEnabled = false
     @AppStorage("CZFEdgeSensitivity") var edgeSensitivity = 1
     // 最小化省电（CZF）：两条都有开关，默认都开，关了即回旧行为。
     // 键在 appGroup，ObjC 侧（Decorated）和 Swift 侧（DockManager）
@@ -47,6 +54,10 @@ struct LCMultitaskSettingView: View {
     @AppStorage("CZFFixedResolutionEnabled") var fixedResolutionEnabled = false
     @AppStorage("CZFFixedResolutionWidth") var fixedResolutionWidth: Double = 390
     @AppStorage("CZFFixedResolutionHeight") var fixedResolutionHeight: Double = 844
+    // 最大化时收起快捷栏（CZF）：标准 UserDefaults，窗口
+    // 侧同键读取；没设过 = 开。开时窗口一最大化（包含以
+    // 最大化状态打开）快捷栏自动收起；还原不自动展开。
+    @AppStorage("CZFCollapseDockWhenMaximized") var collapseDockWhenMaximized = true
 
     // 本页自己的搜索（同款按段关键词过滤）：原来没有
     // 搜索，上面两页搜到这里也只给入口，本页四段（模
@@ -61,7 +72,7 @@ struct LCMultitaskSettingView: View {
 
     var body: some View {
         List {
-            if czfMtSearchVisible("多任务 模式 虚拟窗口 原生窗口 启动 最大化 画中画 pip 跳过 终止 底部栏 链接 重定向 只留一个") {
+            if czfMtSearchVisible("多任务 模式 虚拟窗口 原生窗口 启动 最大化 画中画 pip 跳过 终止 底部栏 链接 重定向 只留一个 快捷栏 收起") {
             Section {
                 if(UIApplication.shared.supportsMultipleScenes) {
                     Picker(selection: $multitaskMode) {
@@ -120,6 +131,12 @@ struct LCMultitaskSettingView: View {
                         HStack {
                             LCSettingsIcon(systemName: "menubar.rectangle", color: .gray)
                             Text("lc.settings.bottomWindowBar".loc)
+                        }
+                    }
+                    Toggle(isOn: $collapseDockWhenMaximized) {
+                        HStack {
+                            LCSettingsIcon(systemName: "dock.rectangle", color: .gray)
+                            Text("最大化时收起快捷栏")
                         }
                     }
                     Toggle(isOn: $redirectURLToHost) {
@@ -240,7 +257,7 @@ struct LCMultitaskSettingView: View {
                             .foregroundColor(.secondary)
                             .font(.caption)
                     }
-                    Slider(value: $windowButtonSize, in: 12...28, step: 1) {
+                    Slider(value: $windowButtonSize, in: 5...20, step: 1) {
                         Text("窗口按钮大小")
                     }
                     .tint(.accentColor)
@@ -337,7 +354,7 @@ struct LCMultitaskSettingView: View {
             } header: {
                 Text("固定分辨率")
             } footer: {
-                Text("开后小窗口里的 App 都按这个分辨率（逻辑点数）渲染，窗口拖多大都不变；画面等比缩放居中放进窗口，多余处留边。开着时缩放比例设置不生效。对新开的窗口生效；已开的窗口重开后按新值画。")
+                Text("开后小窗口里的 App 都按这个分辨率（逻辑点数）渲染；窗口打开时大小也按这个分辨率定（内容区与分辨率等大，分辨率比屏幕大时整窗等比缩小）。之后拖动改变窗口大小，画面仍按固定分辨率等比缩放居中，多余处留边。开着时缩放比例设置不生效。对新开的窗口生效。")
             }
             }
         }

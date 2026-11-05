@@ -146,9 +146,6 @@ extension Notification.Name {
     @Published @objc var isCollapsed: Bool = false
     @Published var isDockHidden: Bool = false
     @Published var settingsChanged: Bool = false
-    // （旧直连通道，已弃用：面板改走 presentAllAppsPanel 的 UIKit 呈现。
-    //  属性保留是因为栏视图还挂着 onChange 引用，删它要动视图修饰链。）
-    @Published var czfPanelOpenCounter: Int = 0
     // 源面板每次调出时 +1，面板视图据此刷新源数据（覆盖层常驻，onAppear 只来一次）
     @Published var czfSourcesPanelOpenCounter: Int = 0
     // App 面板每次调出时 +1，面板视图据此滚回顶部（每次调出都是初始状态，用户定）
@@ -183,6 +180,10 @@ extension Notification.Name {
     // 源面板覆盖层：与 App 面板同构，各自一套遮罩+宿主，互开时先关对方
     private var czfSourcesOverlayBackdrop: UIView?
     private var czfSourcesOverlayHost: UIHostingController<AnyView>?
+    // 源面板卡片式的抓手条与底部留白（与 App 面板那套同义，
+    // 2026-11-06 样式同步后源面板在主窗同为悬浮卡片）
+    private var czfSourcesPanelGrabber: UIView?
+    private var czfSourcesPanelBottomInset: CGFloat = 0
 
     @objc public var windowHostingView = VirtualWindowsHostView()
     internal var hostingController: UIHostingController<AnyView>?
@@ -1462,10 +1463,11 @@ extension Notification.Name {
         default: return 1.0
         }
     }
-    // 边缘手势总开关（设置页控制，键不存在 = 开）
+    // 边缘手势总开关（设置页控制，键不存在 = 关；
+    // Campbell 2026-11-06 令改默认关，此前为默认开）
     static var czfEdgeGesturesEnabled: Bool {
         let d = UserDefaults.standard
-        return d.object(forKey: "CZFEdgeGesturesEnabled") == nil || d.bool(forKey: "CZFEdgeGesturesEnabled")
+        return d.bool(forKey: "CZFEdgeGesturesEnabled")
     }
     private var globalSwipeStartInBand: Bool = true
     // 起手是否落在往外弹专用带内（比普通带宽，只给往外弹用；
@@ -1948,6 +1950,20 @@ extension Notification.Name {
         czfToggleAppPanel(source: .funnel)
     }
 
+    // 快捷栏按钮直调（Campbell 2026-11-06：App 面板呈现统
+    // 一，手势路与快捷栏按钮共用同一个面板）：走同一套覆
+    // 盖层呈现，不再另开系统 sheet。与 czfToggleAppPanel
+    // 的区别只有两点：不吃边缘手势总开关（手势关掉时按钮
+    // 照样要能开面板）、不走手势的跨源节流（按钮点按是单
+    // 一干净信号）。开关式与手势路一致：开着再点就关。
+    @objc public func czfOpenAppPanelFromDock() {
+        if isAppPanelOpen {
+            dismissPanelOverlay()
+        } else {
+            presentAllAppsPanel()
+        }
+    }
+
     private func czfToggleAppPanel(source: CZFPanelSignalSource) {
         guard Self.czfEdgeGesturesEnabled else { return }
         // 不再要求已打开 App/快捷栏可见：用户定任意位置（包括刚
@@ -2108,9 +2124,10 @@ extension Notification.Name {
     }
 
     // App 面板在目标窗口里的静止位/离屏位（用户定版：主窗里
-    // 改成与快捷栏 sheet 一模一样的悬浮卡片——左右各留 10、
-    // 底留 10、四角全圆 30、高 55%，顶部带抓手条；游客窗里
-    // 保持旧的贴底抽屉：满宽、只圆上两角、高 60%）。
+    // 是悬浮卡片——左右各留 10、底留 10、四角全圆 30、高
+    // 55%，顶部带抓手条；游客窗里保持旧的贴底抽屉：满宽、
+    // 只圆上两角、高 60%）。所有入口（边缘手势/快捷栏按钮）
+    // 都走这一套呈现，没有第二种样式。
     private func czfAppPanelFrames(in window: UIWindow) -> (open: CGRect, offscreen: CGRect, card: Bool) {
         let b = window.bounds
         let card = !czfPanelIsGuestWindow(window)
@@ -2134,6 +2151,28 @@ extension Notification.Name {
             : [.layerMinXMinYCorner, .layerMaxXMinYCorner]
         czfPanelGrabber?.isHidden = !frames.card
         czfAppPanelBottomInset = frames.card ? 10 : 0
+    }
+
+    // 源面板的静止位/离屏位：与 App 面板共用同一套帧规则
+    // （Campbell 2026-11-06 令：两个面板样式同步、以快捷
+    // 栏打开的 App 面板为准）。czfAppPanelFrames 只按目标
+    // 窗口算（主窗卡片/游客窗抽屉）、与面板种类无关，
+    // 直接转调，两边永远一致。
+    private func czfSourcesPanelFrames(in window: UIWindow) -> (open: CGRect, offscreen: CGRect, card: Bool) {
+        return czfAppPanelFrames(in: window)
+    }
+
+    // 按卡片/抽屉形态对齐源面板宿主的圆角与抓手条显隐
+    // （czfApplyAppPanelStyle 的源面板对应版）。
+    private func czfApplySourcesPanelStyle(in window: UIWindow) {
+        guard let host = czfSourcesOverlayHost else { return }
+        let frames = czfSourcesPanelFrames(in: window)
+        host.view.layer.cornerRadius = frames.card ? 30 : 20
+        host.view.layer.maskedCorners = frames.card
+            ? [.layerMinXMinYCorner, .layerMaxXMinYCorner, .layerMinXMaxYCorner, .layerMaxXMaxYCorner]
+            : [.layerMinXMinYCorner, .layerMaxXMinYCorner]
+        czfSourcesPanelGrabber?.isHidden = !frames.card
+        czfSourcesPanelBottomInset = frames.card ? 10 : 0
     }
 
     private func presentAllAppsPanel() {
@@ -2205,8 +2244,8 @@ extension Notification.Name {
         let isSources = hostView === czfSourcesOverlayHost?.view
         let backdrop = isSources ? czfSourcesOverlayBackdrop : czfPanelOverlayBackdrop
         let panelHeight = hostView.frame.height
-        // App 面板卡片式时静止位还要扣掉底部留白（呈现时记的）
-        let openY = container.bounds.height - panelHeight - (isSources ? 0 : czfAppPanelBottomInset)
+        // 卡片式时静止位还要扣掉底部留白（呈现时按面板记的）
+        let openY = container.bounds.height - panelHeight - (isSources ? czfSourcesPanelBottomInset : czfAppPanelBottomInset)
         switch gesture.state {
         case .changed:
             let dy = max(0, gesture.translation(in: container).y)
@@ -2272,6 +2311,11 @@ extension Notification.Name {
         let rootView = AnyView(
             SourcesPanelView()
                 .environmentObject(self)
+                // app 卡复用源页面的 LCSourceAppBanner，它读
+                // SharedModel 环境对象：覆盖层不在主 App 的环
+                // 境链里，必须在这里补注入（与主入口同一个
+                // DataManager.shared.model 实例）。
+                .environmentObject(DataManager.shared.model)
                 .environment(\.czfPanelClose) { [weak self] in self?.dismissSourcesOverlay() }
         )
         let host = UIHostingController(rootView: rootView)
@@ -2282,6 +2326,16 @@ extension Notification.Name {
         host.view.clipsToBounds = true
         host.view.isHidden = true
         window.addSubview(host.view)
+        // 卡片式抓手条：与 App 面板同款（顶中 38×5），呈现时
+        // 按形态点亮（czfApplySourcesPanelStyle）。
+        let grabber = UIView()
+        grabber.backgroundColor = UIColor.label.withAlphaComponent(0.25)
+        grabber.layer.cornerRadius = 2.5
+        grabber.frame = CGRect(x: (b.width - 38) / 2, y: 8, width: 38, height: 5)
+        grabber.autoresizingMask = [.flexibleLeftMargin, .flexibleRightMargin]
+        grabber.isHidden = true
+        host.view.addSubview(grabber)
+        czfSourcesPanelGrabber = grabber
         // 下滑关闭：与 App 面板共用同一个拖动处理器
         let drag = UIPanGestureRecognizer(target: self, action: #selector(self.czfPanelDragged(_:)))
         drag.delegate = self
@@ -2310,16 +2364,20 @@ extension Notification.Name {
             window.bringSubviewToFront(backdrop)
             window.bringSubviewToFront(host.view)
             let b = window.bounds
-            let panelHeight = b.height * 0.6
+            // 形态与 App 面板同步（czfSourcesPanelFrames）：
+            // 主窗悬浮卡片、游客窗贴底抽屉，静止位/离屏位
+            // 都走同一处计算（与 presentAllAppsPanel 同构）。
+            let frames = self.czfSourcesPanelFrames(in: window)
+            self.czfApplySourcesPanelStyle(in: window)
             backdrop.frame = b
             backdrop.isHidden = false
             host.view.isHidden = false
-            if host.view.frame.height != panelHeight {
-                host.view.frame = CGRect(x: 0, y: b.height, width: b.width, height: panelHeight)
+            if host.view.frame.height != frames.open.height || host.view.frame.width != frames.open.width {
+                host.view.frame = frames.offscreen
             }
             UIView.animate(withDuration: 0.32, delay: 0, usingSpringWithDamping: 0.92, initialSpringVelocity: 0.6, options: [.curveEaseOut]) {
                 backdrop.alpha = 1
-                host.view.frame = CGRect(x: 0, y: b.height - panelHeight, width: b.width, height: panelHeight)
+                host.view.frame = frames.open
             }
         }
     }
@@ -2349,9 +2407,9 @@ extension Notification.Name {
                   let newHost = toSources ? self.czfSourcesOverlayHost : self.czfPanelOverlayHost,
                   let newBackdrop = toSources ? self.czfSourcesOverlayBackdrop : self.czfPanelOverlayBackdrop else { return }
             let b = window.bounds
-            let panelHeight = b.height * 0.6
             if toSources {
                 self.czfSourcesPanelOpenCounter += 1
+                self.czfApplySourcesPanelStyle(in: window)
             } else {
                 self.czfAppPanelOpenCounter += 1
                 self.czfApplyAppPanelStyle(in: window)
@@ -2362,19 +2420,20 @@ extension Notification.Name {
             newBackdrop.isHidden = false
             newBackdrop.alpha = 1
             newHost.view.isHidden = false
-            // 新面板的静止位：源面板仍是贴底抽屉；App 面板走
-            // czfAppPanelFrames（主窗卡片式/游客窗抽屉式）。
-            let appFrames = self.czfAppPanelFrames(in: window)
+            // 新面板的静止位：两个面板共用同一套帧规则
+            // （czfAppPanelFrames / czfSourcesPanelFrames，
+            // 主窗卡片式/游客窗抽屉式）。
             let newOpenFrame = toSources
-                ? CGRect(x: 0, y: b.height - panelHeight, width: b.width, height: panelHeight)
-                : appFrames.open
+                ? self.czfSourcesPanelFrames(in: window).open
+                : self.czfAppPanelFrames(in: window).open
             if newHost.view.frame.height != newOpenFrame.height || newHost.view.frame.width != newOpenFrame.width {
                 newHost.view.frame = CGRect(x: newOpenFrame.origin.x, y: b.height, width: newOpenFrame.width, height: newOpenFrame.height)
             }
             let oldHeight = oldHost.view.frame.height
-            // 旧面板滑出：App 面板卡片式时多滑一个底部留白，
-            // 不然动画途中会露出一条边（终点在屏外即可）。
-            let oldOffset = oldHeight + (toSources ? self.czfAppPanelBottomInset : 0)
+            // 旧面板滑出：卡片式时多滑一个底部留白，不然动
+            // 画途中会露出一条边（终点在屏外即可）；旧面板
+            // 是谁就用谁的留白（样式同步后两边同为 10）。
+            let oldOffset = oldHeight + (toSources ? self.czfAppPanelBottomInset : self.czfSourcesPanelBottomInset)
             UIView.animate(withDuration: 0.3, delay: 0, usingSpringWithDamping: 0.92, initialSpringVelocity: 0.6, options: [.curveEaseOut]) {
                 oldHost.view.frame = oldHost.view.frame.offsetBy(dx: 0, dy: oldOffset)
                 newHost.view.frame = newOpenFrame
@@ -2406,10 +2465,13 @@ extension Notification.Name {
 
     private func dismissSourcesOverlay() {
         guard let host = czfSourcesOverlayHost, let backdrop = czfSourcesOverlayBackdrop, !host.view.isHidden else { return }
-        let height = host.view.frame.height
+        // 与 App 面板关闭同款：卡片式静止位离底边还差一个
+        // 留白，只按高度偏移会露出一条边，必须滑到
+        // superview 底边之外。
+        let targetY = host.view.superview?.bounds.height ?? host.view.frame.origin.y + host.view.frame.height + 16
         UIView.animate(withDuration: 0.25, delay: 0, options: [.curveEaseIn], animations: {
             backdrop.alpha = 0
-            host.view.frame = host.view.frame.offsetBy(dx: 0, dy: height)
+            host.view.frame.origin.y = targetY
         }, completion: { _ in
             backdrop.isHidden = true
             host.view.isHidden = true
@@ -2545,10 +2607,7 @@ extension Notification.Name {
     }
 }
 
-extension Notification.Name {
-    // 手势请求打开 App 面板（管理器发、栏视图收）
-    static let czfOpenAllAppsPanel = Notification.Name("czfOpenAllAppsPanel")
-}
+
 
 // MARK: - SwiftUI Dock View
 @available(iOS 16.0, *)
@@ -2556,11 +2615,6 @@ public struct MultitaskDockSwiftView: View {
     @EnvironmentObject var dockManager: MultitaskDockManager
     @State private var dragOffset = CGSize.zero
     @State private var isMoving: Bool = false
-    @State private var showAllApps = false
-    // sheet 路面板启动失败回传到这里弹：sheet dismiss 后面板
-    // 视图已销毁，本地 alert 弹不出，只能宿主弹（见 AllAppsListView
-    // 的 onLaunchError；覆盖层路不走这里，行为不动）。
-    @State private var sheetLaunchError: String?
     @AppStorage("LCHideCollapsedDock", store: LCUtils.appGroupUserDefault) var hideCollapsedDock: Bool = false
     
     // Calculate dynamic padding based on user settings
@@ -2582,7 +2636,9 @@ public struct MultitaskDockSwiftView: View {
                     VStack(spacing: 8) {
                         AllAppsButtonView()
                             .onTapGesture {
-                                showAllApps = true
+                                // 与手势路共用同一个 App 面板（覆盖
+                                // 层呈现），不再另开系统 sheet
+                                dockManager.czfOpenAppPanelFromDock()
                             }
                         
                         CollapseButtonView()
@@ -2607,25 +2663,6 @@ public struct MultitaskDockSwiftView: View {
                 }
             }
             .padding(dynamicPadding)
-            .sheet(isPresented: $showAllApps) {
-                AllAppsListView(onLaunchError: { sheetLaunchError = $0 })
-                    // 只留一个半屏档位：两个档位时系统会先拉高抽屉、列表滚不动
-                    .presentationDetents([.fraction(0.6)])
-                    .presentationDragIndicator(.visible)
-            }
-            // sheet 路面板启动失败提示（与面板本地 alert 同款文案）：
-            // 宿主视图不随 sheet 销毁，错误回传到这里才能弹出来。
-            .alert("提示", isPresented: Binding(get: { sheetLaunchError != nil }, set: { if !$0 { sheetLaunchError = nil } })) {
-                Button("好") { sheetLaunchError = nil }
-            } message: {
-                Text(sheetLaunchError ?? "")
-            }
-            .onReceive(NotificationCenter.default.publisher(for: .czfOpenAllAppsPanel)) { _ in
-                showAllApps = true
-            }
-            .onChange(of: dockManager.czfPanelOpenCounter) { _ in
-                showAllApps = true
-            }
             .modifier { content in
                 if #available(iOS 26.0, *), SharedModel.isLiquidGlassEnabled {
                     content.glassEffect(.regular, in: .rect(cornerRadius: 15))
@@ -2899,7 +2936,7 @@ struct CloseAllButtonView: View {
 
 // 手势面板（窗口覆盖层方式）专用的关闭通道：覆盖层不是模态呈现，
 // SwiftUI 的 dismiss 在那里无效。覆盖层注入关闭动作，面板内按钮统一走
-// closePanel()：有注入走注入（覆盖层），没注入走 dismiss（点蓝图标的 sheet）。
+// closePanel()：有注入走注入（覆盖层），没注入走 dismiss 兜底。
 private struct CZFPanelCloseKey: EnvironmentKey {
     static let defaultValue: (() -> Void)? = nil
 }
@@ -3088,12 +3125,27 @@ struct PinnedAppsStripView: View {
 }
 
 @available(iOS 16.0, *)
+// List 背景透明化（iOS 16+）：scrollContentBackground 是
+// 16 起的 API，部署目标 15 起，低版本保持列表自带底色
+// （面板本身是 16+ 多任务特性，15 上差异仅底色一项）。
+private struct CZFListBackdropHidden: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(iOS 16.0, *) {
+            content.scrollContentBackground(.hidden)
+        } else {
+            content
+        }
+    }
+}
+
 struct AllAppsListView: View {
     @Environment(\.dismiss) var dismiss
     @Environment(\.czfPanelClose) private var czfPanelClose
     @EnvironmentObject var dockManager: MultitaskDockManager
 
-    // 关闭面板：覆盖层（手势弹出）走注入的关闭动作；sheet（点蓝图标）走 dismiss
+    // 关闭面板：覆盖层呈现走注入的关闭动作（面板呈现已统一
+    // 为覆盖层一路，旧 sheet 路 2026-11-06 删除）；无注入时
+    // 退回 dismiss 兜底。
     private func closePanel() {
         if let czfPanelClose = czfPanelClose {
             czfPanelClose()
@@ -3104,24 +3156,14 @@ struct AllAppsListView: View {
     @ObservedObject var sortManager = LCAppSortManager.shared
 
     // 面板启动失败提示：原来三条启动路全是 try? 吞错，面板又
-    // 已关掉，失败时只剩“点了没反应”。手势覆盖层常驻窗口
-    // （只改可见性不销毁），这个 @State alert 在覆盖层路能
-    // 正常弹出；蓝图标 sheet 路 dismiss 后视图销毁，本地 alert
-    // 弹不出——所以 sheet 路把错误经 onLaunchError 回传给
-    // 弹出 sheet 的宿主视图弹（宿主不传回调时仍走本地 alert，
-    // 手势路行为一字不动）。JIT 取消不抛错，不会误弹。
+    // 已关掉，失败时只剩“点了没反应”。覆盖层常驻窗口（只改
+    // 可见性不销毁），这个 @State alert 能正常弹出。JIT 取消
+    // 不抛错，不会误弹。（旧 sheet 路的 onLaunchError 回传通
+    // 道已随 sheet 删除，2026-11-06 面板呈现统一为覆盖层。）
     @State private var launchError: String?
 
-    // sheet 路启动失败回传通道（宿主弹 alert 用）：覆盖层路
-    // 不传，仍走上面本地 launchError；只在 Task 报错时调一次。
-    var onLaunchError: ((String) -> Void)? = nil
-
     private func reportLaunchError(_ message: String) {
-        if let onLaunchError {
-            onLaunchError(message)
-        } else {
-            launchError = message
-        }
+        launchError = message
     }
 
     // 面板搜索：不用 .searchable（原来绑常量空串根本不筛选，
@@ -3178,23 +3220,33 @@ struct AllAppsListView: View {
                 .clipShape(RoundedRectangle(cornerRadius: 10))
                 .padding(.horizontal, 16)
                 .padding(.bottom, 8)
-            ScrollView {
-                LazyVStack(spacing: 10) {
-                    ForEach(filteredPanelApps, id: \.self) { app in
-                        AppCardRow(app: app, dockManager: dockManager, onLaunch: {
-                            launchApp(app)
-                        }, onMinimizeOpen: {
-                            minimizeOpenApp(app)
-                        }, onSmallWindowOpen: {
-                            smallWindowOpenApp(app)
-                        })
-                    }
+            // 列表改 List（2026-11-06）：卡片的滑动动作只认
+            // List 行（与源面板同款转换）。卡片自带底色/圆
+            // 角，行底透明、无分隔线；行距上下各 5 凑出原
+            // 卡片间 10 的间距，左右 16 与固定区、运行条同
+            // 线；顶部留一个 0 高锚点行供调出时滚回最顶部。
+            List {
+                Color.clear
+                    .frame(height: 0)
+                    .listRowInsets(EdgeInsets())
+                    .listRowSeparator(.hidden)
+                    .listRowBackground(Color.clear)
+                    .id("czfAppPanelTop")
+                ForEach(filteredPanelApps, id: \.self) { app in
+                    AppCardRow(app: app, dockManager: dockManager, onLaunch: {
+                        launchApp(app)
+                    }, onMinimizeOpen: {
+                        minimizeOpenApp(app)
+                    }, onSmallWindowOpen: {
+                        smallWindowOpenApp(app)
+                    })
+                    .listRowInsets(EdgeInsets(top: 5, leading: 16, bottom: 5, trailing: 16))
+                    .listRowSeparator(.hidden)
+                    .listRowBackground(Color.clear)
                 }
-                // 列表外边距显式写死 16：与固定区、运行条外边距
-                // 同线；顶部不留白，运行条底 10 就是段间距
-                .padding([.horizontal, .bottom], 16)
-                .id("czfAppPanelTop")
             }
+            .listStyle(.plain)
+            .modifier(CZFListBackdropHidden())
             .onChange(of: dockManager.czfAppPanelOpenCounter) { _ in
                 // 每次调出回到初始状态：滚回最顶部（用户定，
                 // 不留上次滑动的位置），搜索也一并清空。
@@ -3479,6 +3531,42 @@ struct SourcesPanelView: View {
     @StateObject private var viewModel = AltStoreSourcesViewModel()
     @State private var errorMessage: String?
 
+    // 面板搜索：与 App 面板同款固定搜索框（不用 .searchable，
+    // 理由见 AllAppsListView 那边的注释）。过滤规则与源页面
+    // 一致（用户定的搜索口径）：源名命中整源全列；否则按
+    // app 名/包名/开发者/副标题逐个匹配，无命中的源整段
+    // 隐藏；加载中/失败的源按显示名匹配。
+    @State private var searchText = ""
+
+    private var panelQuery: String {
+        searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func panelFilteredApps(for item: AltStoreSourcesViewModel.SourceItem) -> [AltStoreSourceApp] {
+        guard let source = item.source else { return [] }
+        let query = panelQuery
+        guard !query.isEmpty else { return source.apps }
+        if item.displayName.lowercased().contains(query.lowercased()) {
+            return source.apps
+        }
+        let lower = query.lowercased()
+        return source.apps.filter { app in
+            app.name.lowercased().contains(lower) ||
+            app.bundleIdentifier.lowercased().contains(lower) ||
+            (app.developerName?.lowercased().contains(lower) ?? false) ||
+            (app.subtitle?.lowercased().contains(lower) ?? false)
+        }
+    }
+
+    private func panelItemVisible(_ item: AltStoreSourcesViewModel.SourceItem) -> Bool {
+        let query = panelQuery
+        guard !query.isEmpty else { return true }
+        guard item.source != nil else {
+            return item.displayName.lowercased().contains(query.lowercased())
+        }
+        return item.displayName.lowercased().contains(query.lowercased()) || !panelFilteredApps(for: item).isEmpty
+    }
+
     private func closePanel() {
         if let czfPanelClose = czfPanelClose {
             czfPanelClose()
@@ -3496,43 +3584,86 @@ struct SourcesPanelView: View {
                     .padding(.horizontal)
                     .padding(.top, 8)
                     .padding(.bottom, 10)
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 16) {
-                    // 滚回顶部锚点（条子已挪到 ScrollView 外面，
-                    // 这里留个 0 高锚点，调出面板仍滚回最顶部）
-                    Color.clear.frame(height: 0).id("czfSourcesPanelTop")
-                    if viewModel.sources.isEmpty {
-                        Text("还没有添加源")
-                            .foregroundColor(.secondary)
-                            .padding(.horizontal)
-                    }
-                    ForEach(viewModel.sources) { item in
-                        if let source = item.source {
-                            VStack(alignment: .leading, spacing: 10) {
-                                Text(source.name)
-                                    .font(.headline)
-                                    .padding(.horizontal)
-                                ForEach(source.apps) { app in
-                                    SourcePanelRow(app: app, onInstall: { installFromPanel(app: app) }, onDownload: { downloadFromPanel(app: app) })
-                                        .padding(.horizontal)
-                                }
-                            }
-                        } else if item.isLoading {
-                            HStack(spacing: 8) {
-                                ProgressView()
-                                Text(item.displayName)
-                                    .foregroundColor(.secondary)
-                            }
-                            .padding(.horizontal)
-                        } else if let err = item.error {
-                            Text("\(item.displayName) 加载失败：\(err)")
-                                .font(.footnote)
-                                .foregroundColor(.red)
-                                .padding(.horizontal)
+                // 搜索框：与 App 面板同款，固定在运行条下方，
+                // 不随列表滚动。
+                HStack(spacing: 8) {
+                    Image(systemName: "magnifyingglass")
+                        .foregroundColor(.secondary)
+                    TextField("搜索", text: $searchText)
+                        .autocapitalization(.none)
+                        .disableAutocorrection(true)
+                    if !searchText.isEmpty {
+                        Button { searchText = "" } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .foregroundColor(.secondary)
                         }
                     }
                 }
-                .padding(.vertical, 12)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(Color(UIColor.secondarySystemBackground))
+                .clipShape(RoundedRectangle(cornerRadius: 10))
+                .padding(.horizontal, 16)
+                .padding(.bottom, 8)
+            if viewModel.sources.isEmpty {
+                VStack(alignment: .leading) {
+                    Text("还没有添加源")
+                        .foregroundColor(.secondary)
+                        .padding(.horizontal)
+                        .padding(.top, 12)
+                    Spacer()
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+            // 列表与源页面同构（Campbell 2026-11-06：面板的
+            // app 卡片与源页面一样）：List + insetGrouped +
+            // 一源一段卡，app 行直接复用源页面的
+            // LCSourceAppBanner（滑动动作/长按菜单/状态判定
+            // 全是同一份）。回顶锚点挂在第一个可见段的第一
+            // 行上（调出面板滚回最顶部，用户定）。
+            List {
+                let firstVisibleID = viewModel.sources.first(where: { panelItemVisible($0) })?.id
+                if firstVisibleID == nil {
+                    Section {
+                        Text("lc.sources.section.noApps".loc)
+                            .font(.footnote)
+                            .foregroundColor(.secondary)
+                            .listRowInsets(EdgeInsets(top: 10, leading: 16, bottom: 10, trailing: 16))
+                            .id("czfSourcesPanelTop")
+                    }
+                }
+                ForEach(viewModel.sources) { item in
+                    if panelItemVisible(item) {
+                        Section {
+                            if let source = item.source {
+                                Text(source.name)
+                                    .font(.headline)
+                                    .listRowInsets(EdgeInsets(top: 12, leading: 16, bottom: 2, trailing: 16))
+                                    .id(item.id == firstVisibleID ? "czfSourcesPanelTop" : item.id.absoluteString + "-name")
+                                ForEach(panelFilteredApps(for: item)) { app in
+                                    LCSourceAppBanner(app: app, source: source, installAction: { installFromPanel(app: $0) }, installAsNewAction: { installFromPanel(app: $0) }, downloadAction: { downloadFromPanel(app: $0) }, isBatchMode: false, isSelected: false, onToggleSelect: {})
+                                        .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
+                                }
+                            } else if item.isLoading {
+                                HStack(spacing: 8) {
+                                    ProgressView()
+                                    Text(item.displayName)
+                                        .foregroundColor(.secondary)
+                                }
+                                .listRowInsets(EdgeInsets(top: 10, leading: 16, bottom: 10, trailing: 16))
+                                .id(item.id == firstVisibleID ? "czfSourcesPanelTop" : item.id.absoluteString + "-loading")
+                            } else if let err = item.error {
+                                Text("\(item.displayName) 加载失败：\(err)")
+                                    .font(.footnote)
+                                    .foregroundColor(.red)
+                                    .listRowInsets(EdgeInsets(top: 10, leading: 16, bottom: 10, trailing: 16))
+                                    .id(item.id == firstVisibleID ? "czfSourcesPanelTop" : item.id.absoluteString + "-error")
+                            }
+                        }
+                    }
+                }
+            }
+            .listStyle(.insetGrouped)
             }
             .navigationTitle("源")
             .navigationBarTitleDisplayMode(.inline)
@@ -3554,8 +3685,10 @@ struct SourcesPanelView: View {
             }
             .onChange(of: dockManager.czfSourcesPanelOpenCounter) { _ in
                 // 每次调出回到初始状态：滚回最顶部（用户定，
-                // 不留上次滑动的位置）+ 刷新源数据
+                // 不留上次滑动的位置）+ 刷新源数据 + 清空搜索
+                // （与 App 面板同款）
                 proxy.scrollTo("czfSourcesPanelTop", anchor: .top)
+                searchText = ""
                 Task { await viewModel.refreshAllSources() }
             }
             .alert("提示", isPresented: Binding(get: { errorMessage != nil }, set: { if !$0 { errorMessage = nil } })) {
@@ -3646,204 +3779,6 @@ struct SourcesPanelView: View {
             popover.permittedArrowDirections = []
         }
         rootVC.present(activityVC, animated: true)
-    }
-}
-
-// 源面板的行卡片：状态判定与源页横幅一致（已装/更新/插件已装）
-@available(iOS 16.0, *)
-private struct SourcePanelRow: View {
-    let app: AltStoreSourceApp
-    let onInstall: () -> Void
-    let onDownload: () -> Void
-    @ObservedObject private var sharedModel = DataManager.shared.model
-    @State private var copied = false
-    // 机制 2：多开时“打开”绝不静默取首个，多个实例弹实例选择
-    @State private var showInstancePicker = false
-
-    private var isInstalled: Bool {
-        (sharedModel.apps + sharedModel.hiddenApps).contains { $0.appInfo.bundleIdentifier() == app.bundleIdentifier }
-    }
-
-    // 注意：installedAppModel 只供 hasUpdate 版本比较；启动绝不走它
-    //（多开时“打开”按下面 installedAppModels 走单开直启/多开选实例）。
-    private var installedAppModel: LCAppModel? {
-        (sharedModel.apps + sharedModel.hiddenApps).first(where: { $0.appInfo.bundleIdentifier() == app.bundleIdentifier })
-    }
-
-    private var installedAppModels: [LCAppModel] {
-        (sharedModel.apps + sharedModel.hiddenApps).filter { $0.appInfo.bundleIdentifier() == app.bundleIdentifier }
-    }
-
-    private var hasUpdate: Bool {
-        guard let sourceVersion = app.latestVersion?.version,
-              let installed = installedAppModel else { return false }
-        return Self.isVersion(sourceVersion, newerThan: installed.appInfo.version())
-    }
-
-    private static func isVersion(_ a: String, newerThan b: String) -> Bool {
-        let aParts = a.split(separator: ".").map { Int($0) ?? 0 }
-        let bParts = b.split(separator: ".").map { Int($0) ?? 0 }
-        let count = max(aParts.count, bParts.count)
-        for i in 0..<count {
-            let av = i < aParts.count ? aParts[i] : 0
-            let bv = i < bParts.count ? bParts[i] : 0
-            if av != bv { return av > bv }
-        }
-        return false
-    }
-
-    private var isPlugin: Bool {
-        app.latestVersion?.downloadURL.pathExtension.lowercased() == "dylib"
-    }
-
-    private var isPluginInstalled: Bool {
-        guard let downloadURL = app.latestVersion?.downloadURL,
-              downloadURL.pathExtension.lowercased() == "dylib" else { return false }
-        let pluginURL = LCPath.tweakPath.appendingPathComponent(app.name).appendingPathComponent(downloadURL.lastPathComponent)
-        return FileManager.default.fileExists(atPath: pluginURL.path)
-    }
-
-    private var metadataText: String {
-        guard let latest = app.latestVersion else {
-            return app.bundleIdentifier
-        }
-        return "\(latest.version) • \(app.bundleIdentifier)"
-    }
-
-    var body: some View {
-        HStack(spacing: 12) {
-            AsyncImage(url: app.iconURL) { phase in
-                if let image = phase.image {
-                    image.resizable().scaledToFill()
-                } else {
-                    Color.gray.opacity(0.25)
-                }
-            }
-            .frame(width: 48, height: 48)
-            // #15：圆角统一 12，跟顶部状态栏条/面板行同款（原来这里 10）
-            .clipShape(RoundedRectangle(cornerRadius: 12))
-            VStack(alignment: .leading, spacing: 4) {
-                Text(app.name)
-                    .font(.system(size: 15)).bold()
-                    .lineLimit(1)
-                Text(metadataText)
-                    .font(.system(size: 11))
-                    .foregroundColor(.secondary)
-                    .lineLimit(1)
-                if let subtitle = app.subtitle, !subtitle.isEmpty {
-                    Text(subtitle)
-                        .font(.system(size: 11))
-                        .foregroundColor(.secondary)
-                        .lineLimit(1)
-                }
-            }
-            Spacer()
-            if let downloadURL = app.latestVersion?.downloadURL {
-                Button {
-                    UIPasteboard.general.string = downloadURL.absoluteString
-                    copied = true
-                } label: {
-                    Image(systemName: copied ? "checkmark" : "doc.on.doc")
-                        .font(.system(size: 14, weight: .semibold))
-                        .frame(width: 30, height: 30)
-                }
-                .buttonStyle(BasicButtonStyle())
-            }
-            Button {
-                onDownload()
-            } label: {
-                Text("下载")
-                    .font(.system(size: 13)).bold()
-                    .foregroundColor(.white)
-                    .frame(height: 30)
-                    .padding(.horizontal, 10)
-            }
-            .buttonStyle(BasicButtonStyle())
-            .background(Capsule().fill(Color.gray))
-            .clipShape(Capsule())
-            if isPlugin && isPluginInstalled {
-                Text("已安装")
-                    .font(.system(size: 13)).bold()
-                    .foregroundColor(.white)
-                    .frame(height: 30)
-                    .padding(.horizontal, 10)
-                    .background(Capsule().fill(Color.green))
-                    .clipShape(Capsule())
-            } else if !isPlugin && isInstalled && hasUpdate {
-                Button {
-                    onInstall()
-                } label: {
-                    Text("更新")
-                        .font(.system(size: 13)).bold()
-                        .foregroundColor(.white)
-                        .frame(height: 30)
-                        .padding(.horizontal, 10)
-                }
-                .buttonStyle(BasicButtonStyle())
-                .background(Capsule().fill(Color.orange))
-                .clipShape(Capsule())
-            } else if !isPlugin && isInstalled {
-                Button {
-                    let matches = installedAppModels
-                    if matches.count == 1, let only = matches.first {
-                        Task { try? await only.runApp() }
-                    } else if matches.count > 1 {
-                        showInstancePicker = true
-                    }
-                } label: {
-                    Text("打开")
-                        .font(.system(size: 13)).bold()
-                        .foregroundColor(.white)
-                        .frame(height: 30)
-                        .padding(.horizontal, 10)
-                }
-                .buttonStyle(BasicButtonStyle())
-                .background(Capsule().fill(Color.green))
-                .clipShape(Capsule())
-            } else {
-                Button {
-                    onInstall()
-                } label: {
-                    Text("安装")
-                        .font(.system(size: 13)).bold()
-                        .foregroundColor(.white)
-                        .frame(height: 30)
-                        .padding(.horizontal, 10)
-                }
-                .buttonStyle(BasicButtonStyle())
-                .background(Capsule().fill(Color.blue))
-                .clipShape(Capsule())
-            }
-        }
-        .padding(10)
-        .background {
-            RoundedRectangle(cornerRadius: 20)
-                .fill(Color(.secondarySystemBackground))
-        }
-        .sheet(isPresented: $showInstancePicker) {
-            NavigationView {
-                List(installedAppModels, id: \.self) { model in
-                    Button {
-                        showInstancePicker = false
-                        Task { try? await model.runApp() }
-                    } label: {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(model.appInfo.displayName())
-                                .font(.system(size: 15)).bold()
-                            Text("容器 \(model.uiSelectedContainer?.name ?? model.uiSelectedContainer?.folderName ?? "") • 版本 \(model.appInfo.version())")
-                                .font(.system(size: 11))
-                                .foregroundColor(.secondary)
-                        }
-                    }
-                }
-                .navigationTitle("选择要打开的实例")
-                .toolbar {
-                    ToolbarItem(placement: .cancellationAction) {
-                        Button("取消") { showInstancePicker = false }
-                    }
-                }
-            }
-        }
     }
 }
 
@@ -4028,86 +3963,180 @@ private struct RunningAppIcon: View {
 
 // MARK: - App Card Row (same style as App tab)
 @available(iOS 16.0, *)
+// App 页卡片的主色提取/可读文字色（LCAppBannerRootView
+// 同名逻辑的 SwiftUI 侧同款实现，供 AppCardRow 与页面卡
+// 保持同一套动态取色；结果同样缓存在 appInfo 上）。
+private func czfBannerMainColor(appInfo: LCAppInfo, icon: UIImage, darkModeIcon: Bool) -> UIColor {
+    if darkModeIcon, let cached = appInfo.cachedColorDark { return cached }
+    if !darkModeIcon, let cached = appInfo.cachedColor { return cached }
+    guard let cgImage = icon.cgImage else { return .clear }
+    var pixelData = [UInt8](repeating: 0, count: 4)
+    guard let context = CGContext(data: &pixelData, width: 1, height: 1, bitsPerComponent: 8, bytesPerRow: 4, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return .clear }
+    context.draw(cgImage, in: CGRect(x: 0, y: 0, width: 1, height: 1))
+    let average = UIColor(red: CGFloat(pixelData[0]) / 255, green: CGFloat(pixelData[1]) / 255, blue: CGFloat(pixelData[2]) / 255, alpha: 1)
+    var hue: CGFloat = 0, saturation: CGFloat = 0, brightness: CGFloat = 0, alpha: CGFloat = 0
+    average.getHue(&hue, saturation: &saturation, brightness: &brightness, alpha: &alpha)
+    let color = (brightness < 0.1 && saturation < 0.1)
+        ? UIColor.systemRed
+        : UIColor(hue: hue, saturation: saturation, brightness: max(brightness, 0.3), alpha: 1)
+    if darkModeIcon { appInfo.cachedColorDark = color } else { appInfo.cachedColor = color }
+    return color
+}
+
+private func czfBannerReadableTextColor(for color: UIColor) -> UIColor {
+    let traits = UITraitCollection.current
+    let resolved = color.resolvedColor(with: traits)
+    let bg = UIColor.systemBackground.resolvedColor(with: traits)
+    var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+    var br: CGFloat = 0, bgc: CGFloat = 0, bb: CGFloat = 0, ba: CGFloat = 0
+    resolved.getRed(&r, green: &g, blue: &b, alpha: &a)
+    bg.getRed(&br, green: &bgc, blue: &bb, alpha: &ba)
+    r = 0.5 * r + 0.5 * br; g = 0.5 * g + 0.5 * bgc; b = 0.5 * b + 0.5 * bb
+    let lum = 0.2126 * r + 0.7152 * g + 0.0722 * b
+    let offset: CGFloat = lum < 0.5 ? 0.4 : -0.4
+    return UIColor(red: min(max(r + offset, 0), 1), green: min(max(g + offset, 0), 1), blue: min(max(b + offset, 0), 1), alpha: 1)
+}
+
 struct AppCardRow: View {
-    let app: LCAppModel
+    @ObservedObject var app: LCAppModel
     let dockManager: MultitaskDockManager
     let onLaunch: () -> Void
     let onMinimizeOpen: () -> Void
     let onSmallWindowOpen: () -> Void
     @ObservedObject private var pinnedStore = CZFPinnedAppsStore.shared
     @State private var appIcon: UIImage?
-    
+    // 与 App 页卡片同一套设置（LCAppBanner 两处 @AppStorage 同键）
+    @AppStorage("dynamicColors", store: LCUtils.appGroupUserDefault) private var dynamicColors = true
+    @AppStorage("darkModeIcon", store: LCUtils.appGroupUserDefault) private var darkModeIcon = false
+
+    // 动态取色口径与 LCAppBannerRootView.update 一字不差：
+    // 主色 = 图标平均色相色（关动态取色时不算）；强调色 =
+    // 主色或 FontColor；卡背 = 主色 50% 或 AppBannerBG。
+    private var accentUIColor: UIColor {
+        guard dynamicColors, let icon = appIcon else { return UIColor(named: "FontColor") ?? .systemBlue }
+        return czfBannerMainColor(appInfo: app.appInfo, icon: icon, darkModeIcon: darkModeIcon)
+    }
+    private var cardBackground: Color {
+        if dynamicColors { return Color(accentUIColor.withAlphaComponent(0.5)) }
+        return Color(UIColor(named: "AppBannerBG") ?? .secondarySystemBackground)
+    }
+    private var metaTextColor: Color {
+        Color(czfBannerReadableTextColor(for: accentUIColor))
+    }
+    private var isRunning: Bool {
+        dockManager.apps.contains(where: { $0.appUUID == app.appInfo.dataUUID })
+    }
+    // 角标显隐与页面卡 update 里的逻辑一致（顺序也一致：
+    // VPN/共享/JIT/32 位/锁定）
+    private var badges: [(symbol: String?, text: String?, green: Bool)] {
+        var list: [(String?, String?, Bool)] = []
+        if CZFVPNManager.isEnabled(for: app.appInfo) { list.append(("globe", nil, true)) }
+        if app.uiIsShared { list.append(("arrowshape.turn.up.left.fill", nil, false)) }
+        if app.uiIsJITNeeded && !app.uiIs32bit { list.append(("bolt.fill", nil, false)) }
+        if app.uiIs32bit { list.append((nil, "32", false)) }
+        if app.uiIsLocked && !app.uiIsHidden { list.append(("lock.fill", nil, false)) }
+        return list
+    }
+
     var body: some View {
+        // 版式与 App 页卡片（LCAppBannerRootView）对齐
+        // （Campbell 2026-11-06：面板 app 卡片与 App 页面
+        // 一样）：高 76、圆角 22、图标 48 圆角 13、角标行
+        // 在名字上方、名 15 粗/版本 11/备注 10。卡面不放
+        // 按钮（同日后续令）：动作改走与页面卡同款的滑动
+        // （左滑启动/打开、右滑小窗口，见 body 末尾）与长
+        // 按菜单（最小化）；长按菜单另有面板自己的固定/
+        // 重启/关闭（页面卡的设置导航与卸载等页面流不进
+        // 面板——页面卡是挂在 App 页导航上的 UIKit 组件，
+        // 无法整件搬进悬浮面板）。
         HStack(spacing: 8) {
-            // App icon
             Group {
                 if let icon = appIcon {
                     Image(uiImage: icon)
                         .resizable()
                 } else {
-                    RoundedRectangle(cornerRadius: 12)
+                    RoundedRectangle(cornerRadius: 13, style: .continuous)
                         .fill(Color.gray.opacity(0.3))
                 }
             }
-            .frame(width: 52, height: 52)
-            .clipShape(RoundedRectangle(cornerRadius: 12))
+            .frame(width: 48, height: 48)
+            .clipShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
             .onAppear { loadIcon() }
-            
-            // 只显示 App 名字（用户要求：版本号/包名/UUID 不再显示）
-            VStack(alignment: .leading, spacing: 2) {
-                Text(app.appInfo.displayName() ?? "Unknown")
-                    .font(.subheadline)
+
+            VStack(alignment: .leading, spacing: 1) {
+                if !badges.isEmpty {
+                    HStack(spacing: 6) {
+                        ForEach(Array(badges.enumerated()), id: \.offset) { _, badge in
+                            ZStack {
+                                if let symbol = badge.symbol {
+                                    Image(systemName: symbol)
+                                        .font(.system(size: 8))
+                                        .foregroundColor(.white)
+                                } else if let text = badge.text {
+                                    Text(text)
+                                        .font(.system(size: 8))
+                                        .foregroundColor(.white)
+                                }
+                            }
+                            .frame(width: 16, height: 16)
+                            .background(badge.green ? Color(.systemGreen) : Color(.systemGray))
+                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                        }
+                    }
+                    .padding(.bottom, 2)
+                }
+                Text(app.displayName)
+                    .font(.system(size: 15, weight: .bold))
                     .foregroundColor(.primary)
                     .lineLimit(1)
+                Text(app.version)
+                    .font(.system(size: 11))
+                    .foregroundColor(metaTextColor)
+                    .lineLimit(1)
+                if !app.uiRemark.isEmpty {
+                    Text(app.uiRemark)
+                        .font(.system(size: 10))
+                        .foregroundColor(metaTextColor.opacity(0.8))
+                        .lineLimit(1)
+                }
             }
-            
+
             Spacer()
-            
-            // 次级动作统一中性灰胶囊（原来蓝/紫糖果色三件套太花，
-            // 用户点名丑）；只有主动作「打开/启动」保留实心蓝
-            Button(action: onMinimizeOpen) {
-                Text("最小化")
-                    .font(.footnote)
-                    .foregroundColor(.primary)
-                    .lineLimit(1)
-                    .fixedSize(horizontal: true, vertical: false)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 7)
-                    .background(Color(.systemGray5))
-                    .clipShape(Capsule())
-            }
-
-            Button(action: onSmallWindowOpen) {
-                Text("小窗口")
-                    .font(.footnote)
-                    .foregroundColor(.primary)
-                    .lineLimit(1)
-                    .fixedSize(horizontal: true, vertical: false)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 7)
-                    .background(Color(.systemGray5))
-                    .clipShape(Capsule())
-            }
-
-            // Launch button
-            Button(action: onLaunch) {
-                Text(dockManager.apps.contains(where: { $0.appUUID == app.appInfo.dataUUID }) ? "打开" : "启动")
-                    .font(.footnote.weight(.semibold))
-                    .foregroundColor(.white)
-                    .lineLimit(1)
-                    .fixedSize(horizontal: true, vertical: false)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 7)
-                    .background(Color.blue)
-                    .clipShape(Capsule())
-            }
         }
-        .padding(10)
-        .background(Color(.secondarySystemBackground))
-        .clipShape(RoundedRectangle(cornerRadius: 20))
-        // 长按行：固定到面板顶部 / 取消固定（用户定）；
+        .padding(.horizontal, 12)
+        .frame(height: 76)
+        .background(cardBackground)
+        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+        // 滑动动作（Campbell 2026-11-06：与 App 页卡片一样
+        // 的滑动，方向按面板动作改派）：左滑（尾侧）= 启动
+        // /打开（滑满直接触发，色随状态：未运行强调色、
+        // 运行中绿色，与源页卡的打开钮同色）；右滑（首
+        // 侧）= 小窗口（灰，与源页卡首侧的复制地址同色系）。
+        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+            Button {
+                onLaunch()
+            } label: {
+                Label(isRunning ? "打开" : "启动", systemImage: "play.fill")
+            }
+            .tint(isRunning ? .green : Color(accentUIColor))
+        }
+        .swipeActions(edge: .leading, allowsFullSwipe: true) {
+            Button {
+                onSmallWindowOpen()
+            } label: {
+                Label("小窗口", systemImage: "pip.enter")
+            }
+            .tint(.gray)
+        }
+        // 长按行：最小化（2026-11-06 卡面按钮删除后挪进
+        // 菜单）、固定到面板顶部 / 取消固定（用户定）；
         // 正在运行的还多两个：重启（卡死时一步恢复）、关闭
         .contextMenu {
+            Button {
+                onMinimizeOpen()
+            } label: {
+                Label("最小化", systemImage: "minus.circle")
+            }
             Button {
                 pinnedStore.toggle(app)
             } label: {
@@ -4135,13 +4164,13 @@ struct AppCardRow: View {
         // onAppear，原来每次都重新解一次图标；先查缓存命中直接
         // 用，未命中才后台解一次并写回。键用 Bundle ID + dataUUID，
         // 与 dock 那边名字_UUID 的键不同，不会串深色/浅色图标。
-        let cacheKey = "\(app.appInfo.bundleIdentifier() ?? "")_\(app.appInfo.dataUUID ?? "")"
+        let cacheKey = "\(app.appInfo.bundleIdentifier() ?? "")_\(app.appInfo.dataUUID ?? "")\(darkModeIcon ? "_dark" : "")"
         if let cached = IconCacheManager.shared.getIcon(for: cacheKey) {
             self.appIcon = cached
             return
         }
         DispatchQueue.global(qos: .userInitiated).async {
-            let icon = app.appInfo.iconIsDarkIcon(false)
+            let icon = app.appInfo.iconIsDarkIcon(darkModeIcon)
             if let icon = icon {
                 IconCacheManager.shared.setIcon(icon, for: cacheKey)
             }

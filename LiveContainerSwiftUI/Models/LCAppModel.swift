@@ -177,7 +177,9 @@ class LCAppModel: ObservableObject, Hashable {
         get {
             if #available(iOS 16.0, *) {
                 return uiIsMultitaskModeSpecificed == .yes ||
-                (uiIsMultitaskModeSpecificed == .default && UserDefaults.standard.bool(forKey: "LCLaunchInMultitaskMode"))
+                // 默认多任务启动 2026-11-06 改为默认开：键不存在 = 开，
+                // 与设置页 @AppStorage 默认值一致（亲手关过仍按关算）
+                (uiIsMultitaskModeSpecificed == .default && (UserDefaults.standard.object(forKey: "LCLaunchInMultitaskMode") == nil || UserDefaults.standard.bool(forKey: "LCLaunchInMultitaskMode")))
             } else {
                 return false
             }

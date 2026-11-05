@@ -1183,6 +1183,14 @@ public final class CZFVPNManager {
             // 令按 LCMachOUtils 去重同款做法废掉（cmd 改成
             // 0x114515），随后照常单独补签。包内副本干净时
             // 扫不到任何东西，行为与旧版一致。
+            // 3.8.12 只废加载命令还不够：那次修复后报错变成
+            // Symbol not found: _NSClassFromString (Expected
+            // in libobjc)——注入方加命令时把全部未定义符号
+            // 的库序号整体 +1 了（已与发布包原文件逐项核对：
+            // UUID 相同、原文件该符号序号 = 1 即 Foundation，
+            // 机上副本 dyld 却按 2 去 libobjc 找）。废掉幻影
+            // 命令后序号必须同步减回去，修法见下面函数的
+            // chained fixups 导入表与符号表两处回退。
             if fm.fileExists(atPath: dest.path), Self.czfStripPhantomLoaderDeps(at: dest) {
                 changed = true
             }
@@ -1204,6 +1212,15 @@ public final class CZFVPNManager {
     // 只查 @loader_path 相对依赖一条：系统库是绝对路径，
     // 不在检查范围；自家插件除系统库外没有别的依赖，所
     // 以任何 @loader_path 依赖缺文件都是外来加的。
+    // 同一轮里若废掉了 K 条幻影命令，再把被注入方整体
+    // +K 的库序号回退 K：(1) LC_DYLD_CHAINED_FIXUPS 导
+    // 入表每项的低字节 lib（dyld 实际绑定走的就是这张
+    // 表）；(2) LC_SYMTAB 里未定义符号 n_desc 的高字节
+    // 序号。序号大于 K 的才回退（≤K 的本就指向幻影库、
+    // 原文件里不存在这种符号，不动）。整个回退只在本轮
+    // 真废掉过幻影命令时才跑——干净文件一个字节都不动；
+    // 而能跑到回退的文件本来就已经坏到加载不了，修错
+    // 也不会让原本能用的配置变差。
     private static func czfStripPhantomLoaderDeps(at fileURL: URL) -> Bool {
         guard var bytes = try? [UInt8](Data(contentsOf: fileURL)), bytes.count >= 32 else { return false }
         func u32le(_ off: Int) -> UInt32 {
@@ -1220,11 +1237,14 @@ public final class CZFVPNManager {
             let ncmds = Int(u32le(base + 16))
             var off = base + 32
             let end = min(base + size, bytes.count)
+            var slicePhantoms = 0
+            var chainedFixups: (off: Int, size: Int)?
+            var symtab: (off: Int, count: Int)?
             for _ in 0..<ncmds {
-                guard off + 8 <= end else { return }
+                guard off + 8 <= end else { break }
                 let cmd = u32le(off)
                 let cmdsize = Int(u32le(off + 4))
-                guard cmdsize >= 8, off + cmdsize <= end else { return }
+                guard cmdsize >= 8, off + cmdsize <= end else { break }
                 if cmd == 0xc || cmd == 0x80000018 || cmd == 0x1f || cmd == 0x80000023 {
                     // dylib_command：name.offset 在命令头 +8 处
                     let nameOff = Int(u32le(off + 8))
@@ -1244,11 +1264,65 @@ public final class CZFVPNManager {
                                 bytes[off + 2] = 0x11
                                 bytes[off + 3] = 0x00
                                 patched = true
+                                slicePhantoms += 1
+                            }
+                        }
+                    }
+                } else if cmd == 0x80000034 || cmd == 0x34, cmdsize >= 16 {
+                    // LC_DYLD_CHAINED_FIXUPS：dataoff/datasize
+                    // 是相对 slice 起点的文件偏移
+                    chainedFixups = (Int(u32le(off + 8)), Int(u32le(off + 12)))
+                } else if cmd == 0x2, cmdsize >= 24 {
+                    // LC_SYMTAB：symoff/nsyms（字符串表用不上）
+                    symtab = (Int(u32le(off + 8)), Int(u32le(off + 12)))
+                }
+                off += cmdsize
+            }
+            guard slicePhantoms > 0 else { return }
+            let k = slicePhantoms
+            // (1) chained fixups 导入表：头部 +8 是导入表
+            // 相对偏移、+16 是导入项数；每项 4 字节，低字
+            // 节是库序号（其余位是 weak 标记与符号名偏移，
+            // 只改低字节就不碰它们）。发布包原文件已实测
+            // 核对过这套布局（86 项、序号 1–4 对应四个系
+            // 统库）。
+            if let fx = chainedFixups, fx.off > 0, fx.size >= 24 {
+                let blob = base + fx.off
+                if blob + 24 <= end, blob + fx.size <= bytes.count {
+                    let importsOff = Int(u32le(blob + 8))
+                    let importsCount = Int(u32le(blob + 16))
+                    let table = blob + importsOff
+                    if importsCount > 0, importsCount < 100000, table + importsCount * 4 <= blob + fx.size {
+                        for i in 0..<importsCount {
+                            let eoff = table + i * 4
+                            let lib = Int(bytes[eoff])
+                            if lib > k {
+                                bytes[eoff] = UInt8(lib - k)
                             }
                         }
                     }
                 }
-                off += cmdsize
+            }
+            // (2) 符号表：nlist64 每项 16 字节，n_type 在
+            // +4、n_desc（UInt16）在 +6，序号在 n_desc 高
+            // 字节。只回退未定义且非调试项的符号，与原文
+            // 件的序号编码一致（实测 0x0100–0x0400）。
+            if let st = symtab, st.count > 0, st.count < 100000 {
+                let table = base + st.off
+                if table + st.count * 16 <= end {
+                    for i in 0..<st.count {
+                        let eoff = table + i * 16
+                        let nType = bytes[eoff + 4]
+                        guard nType & 0x0e == 0, nType & 0xe0 == 0 else { continue }
+                        var desc = Int(bytes[eoff + 6]) | Int(bytes[eoff + 7]) << 8
+                        let ordinal = desc >> 8
+                        if ordinal > k {
+                            desc -= k << 8
+                            bytes[eoff + 6] = UInt8(desc & 0xff)
+                            bytes[eoff + 7] = UInt8((desc >> 8) & 0xff)
+                        }
+                    }
+                }
             }
         }
         if u32le(0) == 0xfeedfacf {

@@ -1,11 +1,15 @@
 #!/bin/bash
 # Codemagic 构建完成后自动发版到 GitHub（MuYu-Blog/LiveContainer-zh）。
-# 与 GitHub Actions 的 nightly 发布保持同一套规矩：
+# 只发布单版本（Campbell 2026-11-06 令：二合一版废弃）：
 # 1) 刷新滚动 release「update」：正文首行 **Commit:** [sha]（App 内
-#    更新检查靠它比对版本）、两个 IPA 附件、apps_nightly.json；
-# 2) release「1.0」的 apps_ss_lc.json 同步替换（AltStore 源）；
-# 3) 正式版 release（tag = Info.plist 版本号）：不存在则创建并设
-#    为 Latest，已存在则只换两个 IPA 附件（幂等，可重复跑）。
+#    更新检查靠它比对版本）、LiveContainer.ipa、apps_nightly.json，
+#    并清掉该 release 上残留的 SideStore 包（存量二合一装机从此
+#    更新到单版本）；
+# 2) 正式版 release（tag = Info.plist 版本号）：不存在则创建并设
+#    为 Latest，已存在则只换 LiveContainer.ipa 附件（幂等，可重
+#    复跑），同样清残留的 SideStore 包。
+# （原第 2 步「release 1.0 的 apps_ss_lc.json 同步」是二合一版的
+# AltStore 源，随二合一废弃一并停止。）
 # 需要环境变量 GH_TOKEN（在 Codemagic 里配的加密变量；细粒度
 # PAT，只有本仓库 Contents 写权限）。未设置时跳过并以成功退出，
 # 不让发版配置缺失拖垮构建产物本身。
@@ -72,6 +76,26 @@ except Exception:
   fi
 }
 
+# 删掉某个 release 上所有名字含指定子串的附件（发版清理用：
+# 二合一废弃后，把 update/正式版上残留的 SideStore 包清掉；
+# 每次发版都跑，幂等、无残留时无操作）。
+delete_assets_matching() {
+  local rid="$1" substr="$2"
+  curl -s "${AUTH[@]}" "$API/releases/$rid/assets" | ASSET_SUBSTR="$substr" python3 -c "import json,os,sys
+substr = os.environ['ASSET_SUBSTR']
+try:
+    for a in json.load(sys.stdin):
+        if substr in (a.get('name') or ''):
+            print(a['id'])
+except Exception:
+    pass" | while read -r aid; do
+    if [ -n "$aid" ]; then
+      echo "清理残留附件（asset $aid）"
+      curl -s -X DELETE "${AUTH[@]}" "$API/releases/assets/$aid" >/dev/null
+    fi
+  done
+}
+
 upload_asset() {
   local rid="$1" file="$2" name
   name=$(basename "$file")
@@ -110,17 +134,11 @@ sha = os.environ['SHA']; msg = os.environ['MSG']
 body = f\"**Commit:** [{sha}](https://github.com/{os.environ['REPO']}/commit/{sha})\n**Version:** {os.environ['VER']}\n**Message:** {msg}\n\nThis is an update release [created automatically with Codemagic workflow]({os.environ['BUILD_LINK']}).\"
 print(json.dumps({'body': body}))")
 curl -sf -X PATCH "${AUTH[@]}" "$API/releases/$UID_REL" -d "$BODY_JSON" >/dev/null
-replace_assets "$UID_REL" "LiveContainer.ipa" "LiveContainer+SideStore.ipa" ".github/apps_nightly.json"
+replace_assets "$UID_REL" "LiveContainer.ipa" ".github/apps_nightly.json"
+delete_assets_matching "$UID_REL" "SideStore"
 echo "update release 已刷新"
 
-# ---- 2) release「1.0」的 apps_ss_lc.json
-OID_REL=$(release_id "1.0")
-if [ -n "$OID_REL" ]; then
-  replace_assets "$OID_REL" ".github/apps_ss_lc.json"
-  echo "1.0 release 的 apps_ss_lc.json 已更新"
-fi
-
-# ---- 3) 正式版 release
+# ---- 2) 正式版 release
 FID_REL=$(release_id "$VER")
 if [ -z "$FID_REL" ]; then
   echo "创建正式版 release $VER"
@@ -132,5 +150,6 @@ print(json.dumps({'tag_name': os.environ['VER'], 'name': os.environ['VER'],
   FID_REL=$(curl -sf -X POST "${AUTH[@]}" "$API/releases" -d "$CREATE_JSON" \
     | python3 -c "import json,sys; print(json.load(sys.stdin).get('id',''))")
 fi
-replace_assets "$FID_REL" "LiveContainer.ipa" "LiveContainer+SideStore.ipa"
+replace_assets "$FID_REL" "LiveContainer.ipa"
+delete_assets_matching "$FID_REL" "SideStore"
 echo "正式版 $VER 已发布：https://github.com/$REPO/releases/tag/$VER"
