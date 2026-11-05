@@ -1393,8 +1393,8 @@ private struct AltStoreSourceSectionView: View {
     }
 }
 
-// 源页与源面板共用同一张 app 卡（2026-11-06 起面板直接
-// 复用本视图，不再有面板自己的行样式）：去掉 private。
+// 源页与源面板共用同一张 app 卡（源面板直接复用本视图，
+// 不再有面板自己的行样式）：不设 private。
 struct LCSourceAppBanner: View {
     let app: AltStoreSourceApp
     let source: AltStoreSource

@@ -190,7 +190,13 @@ extension Notification.Name {
 
     public struct Constants {
         // MARK: - Layout & Sizing
-        static let defaultDockWidth: CGFloat = 90.0
+        // 默认快捷栏宽度 25（Campbell 2026-11-06 定；键
+        // LCDockWidth 没设过时 originalDockWidth 与隐藏偏
+        // 移都按这个值走，设置页 @AppStorage 默认同为 25）
+        static let defaultDockWidth: CGFloat = 25.0
+        // 顶部条额外内边距的历史参照（见面板条构造处）：
+        // 以 90 为零点按比例加减，与默认宽度无关，勿动。
+        static let dockWidthPaddingReference: CGFloat = 90.0
         static let minAdaptiveDockWidth: CGFloat = 50.0
         static let minAdaptiveIconSize: CGFloat = 10.0
         static let maxIconSize: CGFloat = 100.0
@@ -2620,7 +2626,7 @@ public struct MultitaskDockSwiftView: View {
     // Calculate dynamic padding based on user settings
     private var dynamicPadding: CGFloat {
         let basePadding: CGFloat = 4
-        let extraPadding = (dockManager.dockWidth - MultitaskDockManager.Constants.defaultDockWidth) * 0.2
+        let extraPadding = (dockManager.dockWidth - MultitaskDockManager.Constants.dockWidthPaddingReference) * 0.2
         return max(basePadding, basePadding + extraPadding)
     }
     
@@ -3668,6 +3674,11 @@ struct SourcesPanelView: View {
                 }
             }
             .listStyle(.insetGrouped)
+            // 与 App 面板同款磨砂玻璃质感（Campbell 2026-11-06
+            // 令）：列表底色透明化，透出下方被遮罩压暗的界
+            // 面，卡片浮在半透明底上（App 面板一直如此，源
+            // 面板此前是整块实色分组底，没有玻璃感）。
+            .modifier(CZFListBackdropHidden())
             }
             }
             // 标题/工具栏/回顶/提示挂在 VStack 上：原来挂在
@@ -3969,11 +3980,10 @@ private struct RunningAppIcon: View {
     }
 }
 
-// MARK: - App Card Row (same style as App tab)
-@available(iOS 16.0, *)
 // App 页卡片的主色提取/可读文字色（LCAppBannerRootView
 // 同名逻辑的 SwiftUI 侧同款实现，供 AppCardRow 与页面卡
 // 保持同一套动态取色；结果同样缓存在 appInfo 上）。
+@available(iOS 16.0, *)
 private func czfBannerMainColor(appInfo: LCAppInfo, icon: UIImage, darkModeIcon: Bool) -> UIColor {
     if darkModeIcon, let cached = appInfo.cachedColorDark { return cached }
     if !darkModeIcon, let cached = appInfo.cachedColor { return cached }
@@ -4005,8 +4015,7 @@ private func czfBannerReadableTextColor(for color: UIColor) -> UIColor {
     return UIColor(red: min(max(r + offset, 0), 1), green: min(max(g + offset, 0), 1), blue: min(max(b + offset, 0), 1), alpha: 1)
 }
 
-// AppCardRow 用到 MultitaskDockManager 等 iOS 16+ 类型，
-// 本轮新建时漏了注解，构建 #16 在此报了两处错，补上。
+// MARK: - App Card Row (same style as App tab)
 @available(iOS 16.0, *)
 struct AppCardRow: View {
     @ObservedObject var app: LCAppModel
@@ -4016,13 +4025,26 @@ struct AppCardRow: View {
     let onSmallWindowOpen: () -> Void
     @ObservedObject private var pinnedStore = CZFPinnedAppsStore.shared
     @State private var appIcon: UIImage?
+
+    // 标志与 App 页卡片（LCAppBannerRootView.update）同一
+    // 套判定与顺序：VPN/共享/JIT/32 位/锁定。
+    private var badges: [(symbol: String?, text: String?, color: Color)] {
+        var list: [(String?, String?, Color)] = []
+        if CZFVPNManager.isEnabled(for: app.appInfo) { list.append(("globe", nil, Color(.systemGreen))) }
+        if app.uiIsShared { list.append(("arrowshape.turn.up.left.fill", nil, Color(.systemBlue))) }
+        if app.uiIsJITNeeded && !app.uiIs32bit { list.append(("bolt.fill", nil, Color(.systemOrange))) }
+        if app.uiIs32bit { list.append((nil, "32", Color(.systemPurple))) }
+        if app.uiIsLocked && !app.uiIsHidden { list.append(("lock.fill", nil, Color(.systemRed))) }
+        return list
+    }
+
     // 与 App 页卡片同一套设置（LCAppBanner 两处 @AppStorage 同键）
     @AppStorage("dynamicColors", store: LCUtils.appGroupUserDefault) private var dynamicColors = true
     @AppStorage("darkModeIcon", store: LCUtils.appGroupUserDefault) private var darkModeIcon = false
 
     // 动态取色口径与 LCAppBannerRootView.update 一字不差：
     // 主色 = 图标平均色相色（关动态取色时不算）；强调色 =
-    // 主色或 FontColor；卡背 = 主色 50% 或 AppBannerBG。
+    // 主色或 FontColor；卡背 = 主色 50% 透明度或 AppBannerBG。
     private var accentUIColor: UIColor {
         guard dynamicColors, let icon = appIcon else { return UIColor(named: "FontColor") ?? .systemBlue }
         return czfBannerMainColor(appInfo: app.appInfo, icon: icon, darkModeIcon: darkModeIcon)
@@ -4034,46 +4056,26 @@ struct AppCardRow: View {
     private var metaTextColor: Color {
         Color(czfBannerReadableTextColor(for: accentUIColor))
     }
-    private var isRunning: Bool {
-        dockManager.apps.contains(where: { $0.appUUID == app.appInfo.dataUUID })
-    }
-    // 角标显隐与页面卡 update 里的逻辑一致（顺序也一致：
-    // VPN/共享/JIT/32 位/锁定）
-    private var badges: [(symbol: String?, text: String?, green: Bool)] {
-        var list: [(String?, String?, Bool)] = []
-        if CZFVPNManager.isEnabled(for: app.appInfo) { list.append(("globe", nil, true)) }
-        if app.uiIsShared { list.append(("arrowshape.turn.up.left.fill", nil, false)) }
-        if app.uiIsJITNeeded && !app.uiIs32bit { list.append(("bolt.fill", nil, false)) }
-        if app.uiIs32bit { list.append((nil, "32", false)) }
-        if app.uiIsLocked && !app.uiIsHidden { list.append(("lock.fill", nil, false)) }
-        return list
-    }
-
+    
     var body: some View {
-        // 版式与 App 页卡片（LCAppBannerRootView）对齐
-        // （Campbell 2026-11-06：面板 app 卡片与 App 页面
-        // 一样）：高 76、圆角 22、图标 48 圆角 13、角标行
-        // 在名字上方、名 15 粗/版本 11/备注 10。卡面不放
-        // 按钮（同日后续令）：动作改走与页面卡同款的滑动
-        // （左滑启动/打开、右滑小窗口，见 body 末尾）与长
-        // 按菜单（最小化）；长按菜单另有面板自己的固定/
-        // 重启/关闭（页面卡的设置导航与卸载等页面流不进
-        // 面板——页面卡是挂在 App 页导航上的 UIKit 组件，
-        // 无法整件搬进悬浮面板）。
         HStack(spacing: 8) {
+            // App icon
             Group {
                 if let icon = appIcon {
                     Image(uiImage: icon)
                         .resizable()
                 } else {
-                    RoundedRectangle(cornerRadius: 13, style: .continuous)
+                    RoundedRectangle(cornerRadius: 12)
                         .fill(Color.gray.opacity(0.3))
                 }
             }
-            .frame(width: 48, height: 48)
-            .clipShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
+            .frame(width: 52, height: 52)
+            .clipShape(RoundedRectangle(cornerRadius: 12))
             .onAppear { loadIcon() }
-
+            
+            // 信息与 App 页卡片一致（Campbell 2026-11-06 令）：
+            // 名字上方一排标志，名字下面版本号、再下面备注；
+            // 包名/UUID 等多余信息不显示。
             VStack(alignment: .leading, spacing: 1) {
                 if !badges.isEmpty {
                     HStack(spacing: 6) {
@@ -4090,7 +4092,7 @@ struct AppCardRow: View {
                                 }
                             }
                             .frame(width: 16, height: 16)
-                            .background(badge.green ? Color(.systemGreen) : Color(.systemGray))
+                            .background(badge.color)
                             .clipShape(RoundedRectangle(cornerRadius: 8))
                         }
                     }
@@ -4111,25 +4113,63 @@ struct AppCardRow: View {
                         .lineLimit(1)
                 }
             }
-
+            
             Spacer()
+
+            // 次级动作统一中性灰胶囊（原来蓝/紫糖果色三件套太花，
+            // 用户点名丑）；只有主动作「打开/启动」保留实心蓝
+            Button(action: onMinimizeOpen) {
+                Text("最小化")
+                    .font(.footnote)
+                    .foregroundColor(.primary)
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 7)
+                    .background(Color(.systemGray5))
+                    .clipShape(Capsule())
+            }
+
+            Button(action: onSmallWindowOpen) {
+                Text("小窗口")
+                    .font(.footnote)
+                    .foregroundColor(.primary)
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 7)
+                    .background(Color(.systemGray5))
+                    .clipShape(Capsule())
+            }
+
+            // Launch button
+            Button(action: onLaunch) {
+                Text(dockManager.apps.contains(where: { $0.appUUID == app.appInfo.dataUUID }) ? "打开" : "启动")
+                    .font(.footnote.weight(.semibold))
+                    .foregroundColor(.white)
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 7)
+                    .background(Color(accentUIColor))
+                    .clipShape(Capsule())
+            }
         }
-        .padding(.horizontal, 12)
-        .frame(height: 76)
+        .padding(10)
         .background(cardBackground)
-        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
-        // 滑动动作（Campbell 2026-11-06：与 App 页卡片一样
-        // 的滑动，方向按面板动作改派）：左滑（尾侧）= 启动
-        // /打开（滑满直接触发，色随状态：未运行强调色、
-        // 运行中绿色，与源页卡的打开钮同色）；右滑（首
-        // 侧）= 小窗口（灰，与源页卡首侧的复制地址同色系）。
+        .clipShape(RoundedRectangle(cornerRadius: 20))
+        // 滑动动作（Campbell 2026-11-06 定，回退后按其点名
+        // 保留）：与 App 页卡片同款滑动，方向按面板动作改
+        // 派：左滑（尾侧）= 启动/打开（滑满直接触发，未运行
+        // 蓝色、运行中绿色）；右滑（首侧）= 小窗口（灰）。
+        // 卡面三按钮按 Campbell 后令保留，与滑动并存。
         .swipeActions(edge: .trailing, allowsFullSwipe: true) {
             Button {
                 onLaunch()
             } label: {
-                Label(isRunning ? "打开" : "启动", systemImage: "play.fill")
+                Label(dockManager.apps.contains(where: { $0.appUUID == app.appInfo.dataUUID }) ? "打开" : "启动", systemImage: "play.fill")
             }
-            .tint(isRunning ? .green : Color(accentUIColor))
+            .tint(dockManager.apps.contains(where: { $0.appUUID == app.appInfo.dataUUID }) ? .green : Color(accentUIColor))
         }
         .swipeActions(edge: .leading, allowsFullSwipe: true) {
             Button {
@@ -4139,9 +4179,9 @@ struct AppCardRow: View {
             }
             .tint(.gray)
         }
-        // 长按行：最小化（2026-11-06 卡面按钮删除后挪进
-        // 菜单）、固定到面板顶部 / 取消固定（用户定）；
-        // 正在运行的还多两个：重启（卡死时一步恢复）、关闭
+        // 长按行：最小化（与卡面按钮并存）、固定到面板顶部
+        // / 取消固定（用户定）；正在运行的还多两个：重启
+        // （卡死时一步恢复）、关闭
         .contextMenu {
             Button {
                 onMinimizeOpen()

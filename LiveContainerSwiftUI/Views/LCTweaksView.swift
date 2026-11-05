@@ -109,10 +109,6 @@ struct LCTweakFolderView : View {
     // 是现成的，导入照抄一套）
     @State private var isTweakInstalling = false
 
-    // 导出分享表：长按菜单“导出”点开后要分享的文件
-    @State private var exportItems: [URL] = []
-    @State private var showExportSheet = false
-    
     init(baseUrl: URL, isRoot: Bool = false, searchContext: SearchContext = SearchContext()) {
         _baseUrl = State(initialValue: baseUrl)
         self.isRoot = isRoot
@@ -326,11 +322,6 @@ struct LCTweakFolderView : View {
         } message: {
             Text("删除后无法恢复")
         }
-        .sheet(isPresented: $showExportSheet) {
-            if !exportItems.isEmpty {
-                ActivityViewController(activityItems: exportItems)
-            }
-        }
         .textFieldAlert(
             isPresented: $newFolderInput.show,
             title: "lc.common.enterNewFolderName".loc,
@@ -495,8 +486,9 @@ struct LCTweakFolderView : View {
         } else {
             return
         }
-        exportItems = urls
-        showExportSheet = true
+        // 分享表直接从顶层控制器 present（塞进 .sheet
+        // 里只会弹空白页，见 czfPresentActivitySheet）
+        czfPresentActivitySheet(items: urls)
     }
     
     func renameTweakItem(tweakItem: LCTweakItem) async {

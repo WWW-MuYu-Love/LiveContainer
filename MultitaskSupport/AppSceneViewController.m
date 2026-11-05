@@ -31,27 +31,6 @@
 
 @implementation AppSceneViewController
 
-// 固定分辨率（CZF）：设置页「应用设置」的开关与宽高，
-// 标准 UserDefaults（与设置页 @AppStorage 同一本）。
-// 开时场景逻辑尺寸恒为这个值，与窗口大小、缩放比例
-// 都脱钩；画面往窗口里的等比适配由窗口侧
-// （DecoratedAppSceneViewController）算变换。
-static BOOL CZFFixedResolutionEnabled(void) {
-    return [NSUserDefaults.standardUserDefaults boolForKey:@"CZFFixedResolutionEnabled"];
-}
-
-static CGSize CZFFixedResolutionSize(void) {
-    NSUserDefaults *d = NSUserDefaults.standardUserDefaults;
-    CGFloat w = [d doubleForKey:@"CZFFixedResolutionWidth"];
-    CGFloat h = [d doubleForKey:@"CZFFixedResolutionHeight"];
-    if (w < 100) w = 390;
-    if (h < 100) h = 844;
-    if (w > 2000) w = 2000;
-    if (h > 2000) h = 2000;
-    return CGSizeMake(w, h);
-}
-
-
 - (instancetype)initWithBundleId:(NSString*)bundleId dataUUID:(NSString*)dataUUID delegate:(id<AppSceneViewControllerDelegate>)delegate {
     self = [super initWithNibName:nil bundle:nil];
     self.delegate = delegate;
@@ -295,12 +274,7 @@ static CGSize CZFFixedResolutionSize(void) {
             settings.deviceOrientation = UIDevice.currentDevice.orientation;
             settings.interfaceOrientation = self.view.window.windowScene.interfaceOrientation;
             CGRect frame = self.view.frame;
-            if (CZFFixedResolutionEnabled()) {
-                // 固定分辨率：逻辑尺寸只认设置值，下面的横
-                // 屏宽高互换照常走（竖屏宽高转横屏）
-                CGSize fixed = CZFFixedResolutionSize();
-                frame = CGRectMake(frame.origin.x, frame.origin.y, fixed.width, fixed.height);
-            } else if(!self.usesHostingControllerAPI) {
+            if(!self.usesHostingControllerAPI) {
                 frame.size.width /= self.scaleRatio;
                 frame.size.height /= self.scaleRatio;
             }

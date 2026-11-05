@@ -21,7 +21,7 @@ struct LCMultitaskSettingView: View {
     @AppStorage("LCSkipTerminatedScreen", store: LCUtils.appGroupUserDefault) var skipTerminatedScreen = false
     @AppStorage("LCRestartTerminatedApp", store: LCUtils.appGroupUserDefault) var restartTerminatedApp = false
     @AppStorage("LCMaxOneAppOnStage", store: LCUtils.appGroupUserDefault) var onlyOneAppOnStage = false
-    @AppStorage("LCDockWidth", store: LCUtils.appGroupUserDefault) var dockWidth: Double = 80
+    @AppStorage("LCDockWidth", store: LCUtils.appGroupUserDefault) var dockWidth: Double = 25
     @AppStorage("LCHideCollapsedDock", store: LCUtils.appGroupUserDefault) var hideCollapsedDock: Bool = false
     // 隐藏快捷栏（CZF）：整条竖栏都不显示，有手势就够了；
     // 默认关（保持现有行为），开后快捷栏不再弹出
@@ -44,16 +44,13 @@ struct LCMultitaskSettingView: View {
     // 最小化自动关时长（CZF，可调）：10 / 30 / 60 分钟，默认 30
     // 分钟（以前写死 30 分钟）。Dock 侧按“键不存在 = 30”同款读法。
     @AppStorage("CZFMinAutoCloseMinutes", store: LCUtils.appGroupUserDefault) var minAutoCloseMinutes = 30
-    // 窗口外观三件（CZF，用户令从应用设置挪进本页）：
-    // 右上角三键大小、自适应/默认缩放、固定分辨率。
-    // 都是标准 UserDefaults，与窗口侧 lcUserDefaults
-    // 同一本，窗口侧读法不变，只是设置入口换到这里。
-    @AppStorage("CZFWindowButtonSize") var windowButtonSize: Double = 16
+    // 窗口缩放（CZF，用户令从应用设置挪进本页）：
+    // 自适应/默认缩放。标准 UserDefaults，与窗口侧
+    // lcUserDefaults 同一本，窗口侧读法不变，只是设置
+    // 入口换到这里。（窗口按钮大小、固定分辨率两项设置
+    // 已按 Campbell 2026-11-06 令删除。）
     @AppStorage("CZFAdaptiveScaleEnabled") var adaptiveScaleEnabled = false
     @AppStorage("CZFWindowScaleRatio") var windowScaleRatio: Double = 1.0
-    @AppStorage("CZFFixedResolutionEnabled") var fixedResolutionEnabled = false
-    @AppStorage("CZFFixedResolutionWidth") var fixedResolutionWidth: Double = 390
-    @AppStorage("CZFFixedResolutionHeight") var fixedResolutionHeight: Double = 844
     // 最大化时收起快捷栏（CZF）：标准 UserDefaults，窗口
     // 侧同键读取；没设过 = 开。开时窗口一最大化（包含以
     // 最大化状态打开）快捷栏自动收起；还原不自动展开。
@@ -153,7 +150,7 @@ struct LCMultitaskSettingView: View {
             Section {
                 VStack(alignment: .leading, spacing: 12) {
                     HStack {
-                        LCSettingsIcon(systemName: "rectangle.expand.horizontal", color: .blue)
+                        LCSettingsIcon(systemName: "dock.rectangle", color: .blue)
                         Text("lc.settings.dockWidth".loc)
                             .foregroundColor(.primary)
                         Spacer()
@@ -161,7 +158,7 @@ struct LCMultitaskSettingView: View {
                             .foregroundColor(.secondary)
                             .font(.caption)
                     }
-                    Slider(value: $dockWidth, in: 20...120) {
+                    Slider(value: $dockWidth, in: 20...120, step: 5) {
                         Text("lc.settings.dockWidth".loc)
                     }
                     .tint(.accentColor)
@@ -245,30 +242,6 @@ struct LCMultitaskSettingView: View {
                 Text("记住窗口位置：关掉 App 窗口时记下它的大小、位置和全屏状态，下次打开自动还原。手势灵敏度影响宿主侧的边缘启用范围和触发距离；低档更防误触，高档更好触发。")
             }
             }
-            if czfMtSearchVisible("窗口 按钮 大小 最小化 全屏 关闭") {
-            Section {
-                VStack(alignment: .leading, spacing: 12) {
-                    HStack {
-                        LCSettingsIcon(systemName: "macwindow", color: .blue)
-                        Text("窗口按钮大小")
-                            .foregroundColor(.primary)
-                        Spacer()
-                        Text("\(Int(windowButtonSize))pt")
-                            .foregroundColor(.secondary)
-                            .font(.caption)
-                    }
-                    Slider(value: $windowButtonSize, in: 5...20, step: 1) {
-                        Text("窗口按钮大小")
-                    }
-                    .tint(.accentColor)
-                }
-                .padding(.vertical, 4)
-            } header: {
-                Text("窗口按钮")
-            } footer: {
-                Text("小窗口右上角最小化、全屏、关闭三个按键的大小。新开的窗口生效；已经开着的窗口下次打开时生效。")
-            }
-            }
             if czfMtSearchVisible("缩放 比例 自适应 默认 窗口") {
             Section {
                 Toggle(isOn: $adaptiveScaleEnabled) {
@@ -284,11 +257,11 @@ struct LCMultitaskSettingView: View {
                             Text("默认缩放比例")
                                 .foregroundColor(.primary)
                             Spacer()
-                            Text(String(format: "%.2f", windowScaleRatio))
+                            Text("\(Int((windowScaleRatio * 100).rounded()))%")
                                 .foregroundColor(.secondary)
                                 .font(.caption)
                         }
-                        Slider(value: $windowScaleRatio, in: 0.5...2.0, step: 0.01) {
+                        Slider(value: $windowScaleRatio, in: 0.5...2.0, step: 0.05) {
                             Text("默认缩放比例")
                         }
                         .tint(.accentColor)
@@ -299,62 +272,6 @@ struct LCMultitaskSettingView: View {
                 Text("缩放比例")
             } footer: {
                 Text("自适应开：窗口缩放按窗口宽度与全屏宽度的比自动算，整个界面等比缩进窗口；改窗口大小、最大化/还原后会重算。关：新窗口用默认比例。窗口标题菜单里的滑杆仍可单独调每个窗口，仅当次有效。")
-            }
-            }
-            if czfMtSearchVisible("固定 分辨率 宽 高 窗口 显示") {
-            Section {
-                Toggle(isOn: $fixedResolutionEnabled) {
-                    HStack {
-                        LCSettingsIcon(systemName: "display", color: .teal)
-                        Text("固定分辨率")
-                    }
-                }
-                if fixedResolutionEnabled {
-                    HStack {
-                        Text("预设")
-                        Spacer()
-                        Menu {
-                            Button("iPhone 16 Pro · 402 × 874") { fixedResolutionWidth = 402; fixedResolutionHeight = 874 }
-                            Button("iPhone 15 / 14 Pro · 393 × 852") { fixedResolutionWidth = 393; fixedResolutionHeight = 852 }
-                            Button("iPhone Plus / Max · 430 × 932") { fixedResolutionWidth = 430; fixedResolutionHeight = 932 }
-                            Button("iPhone 14 / 13 / 12 · 390 × 844") { fixedResolutionWidth = 390; fixedResolutionHeight = 844 }
-                            Button("iPhone SE · 375 × 667") { fixedResolutionWidth = 375; fixedResolutionHeight = 667 }
-                            Button("Android 常见 · 360 × 800") { fixedResolutionWidth = 360; fixedResolutionHeight = 800 }
-                            Button("iPad · 820 × 1180") { fixedResolutionWidth = 820; fixedResolutionHeight = 1180 }
-                        } label: {
-                            HStack(spacing: 4) {
-                                Text("\(Int(fixedResolutionWidth)) × \(Int(fixedResolutionHeight))")
-                                Image(systemName: "chevron.up.chevron.down")
-                                    .font(.caption2)
-                            }
-                            .foregroundColor(.accentColor)
-                        }
-                    }
-                    HStack {
-                        Text("宽度")
-                        Spacer()
-                        TextField("宽", value: $fixedResolutionWidth, format: .number)
-                            .keyboardType(.numberPad)
-                            .multilineTextAlignment(.trailing)
-                            .frame(width: 80)
-                        Text("pt")
-                            .foregroundColor(.secondary)
-                    }
-                    HStack {
-                        Text("高度")
-                        Spacer()
-                        TextField("高", value: $fixedResolutionHeight, format: .number)
-                            .keyboardType(.numberPad)
-                            .multilineTextAlignment(.trailing)
-                            .frame(width: 80)
-                        Text("pt")
-                            .foregroundColor(.secondary)
-                    }
-                }
-            } header: {
-                Text("固定分辨率")
-            } footer: {
-                Text("开后小窗口里的 App 都按这个分辨率（逻辑点数）渲染；窗口打开时大小也按这个分辨率定（内容区与分辨率等大，分辨率比屏幕大时整窗等比缩小）。之后拖动改变窗口大小，画面仍按固定分辨率等比缩放居中，多余处留边。开着时缩放比例设置不生效。对新开的窗口生效。")
             }
             }
         }

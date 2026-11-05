@@ -1164,34 +1164,20 @@ public final class CZFVPNManager {
             if (try? String(contentsOf: endpointsFile, encoding: .utf8)) != endpointsText {
                 try? endpointsText.write(to: endpointsFile, atomically: true, encoding: .utf8)
             }
-            guard let src = Bundle.main.url(forResource: "CZFProxy", withExtension: "dylib") else { return false }
-            let srcData = try? Data(contentsOf: src)
+            guard let src = Bundle.main.url(forResource: "CZFProxy", withExtension: "dylib"),
+                  let srcData = try? Data(contentsOf: src) else { return false }
+            // 同步目标以包内副本过一遍加载命令消毒后的字
+            // 节为准（原理见 czfSanitizedProxyData）：机上
+            // 包内副本的 Foundation 库名可能被注入方改写
+            // 成幻影路径，消毒在内存里改回原样再落盘；模
+            // 块目录里那份此前被旧版自愈废过命令号、回退
+            // 过序号的，一律以消毒后的包内副本整份覆盖，
+            // 不再在目标文件上做增量修补。
+            let targetData = Self.czfSanitizedProxyData(srcData, folderPath: tweakFolderUrl.path) ?? srcData
             let destData = try? Data(contentsOf: dest)
             var changed = false
-            if destData != srcData {
-                try? fm.removeItem(at: dest)
-                try? fm.copyItem(at: src, to: dest)
-                changed = true
-            }
-            // 幻影依赖自愈：发布包里的 CZFProxy 只依赖系统
-            // 库，但用户实测机上副本被重签/重打包环节加了一
-            // 条 @loader_path/Frameworks/<哈希名>.dylib 的
-            // 加载命令，指向的文件根本不存在，游客 dlopen
-            // 插件直接报 Failed to load tweaks、代理不生效。
-            // 同步时扫一遍目标文件：凡是 @loader_path 相对依
-            // 赖在插件目录里找不到对应文件的，把那条加载命
-            // 令按 LCMachOUtils 去重同款做法废掉（cmd 改成
-            // 0x114515），随后照常单独补签。包内副本干净时
-            // 扫不到任何东西，行为与旧版一致。
-            // 3.8.12 只废加载命令还不够：那次修复后报错变成
-            // Symbol not found: _NSClassFromString (Expected
-            // in libobjc)——注入方加命令时把全部未定义符号
-            // 的库序号整体 +1 了（已与发布包原文件逐项核对：
-            // UUID 相同、原文件该符号序号 = 1 即 Foundation，
-            // 机上副本 dyld 却按 2 去 libobjc 找）。废掉幻影
-            // 命令后序号必须同步减回去，修法见下面函数的
-            // chained fixups 导入表与符号表两处回退。
-            if fm.fileExists(atPath: dest.path), Self.czfStripPhantomLoaderDeps(at: dest) {
+            if destData != targetData {
+                try? targetData.write(to: dest)
                 changed = true
             }
             return changed
@@ -1203,33 +1189,42 @@ public final class CZFVPNManager {
         return false
     }
 
-    // 扫一个 Mach-O（thin 64 位或 fat，逐 slice）里的 dylib
-    // 加载命令：路径以 @loader_path/ 开头、且相对插件所在
-    // 目录解析后文件不存在的，判定为幻影依赖，把该命令的
-    // cmd 原地改成 0x114515（LCMachOUtils 去重重复依赖的
-    // 同款废法，dyld 跳过不认的命令号）。改动落盘并返回
-    // true；解析异常或没有幻影依赖返回 false、文件不动。
-    // 只查 @loader_path 相对依赖一条：系统库是绝对路径，
-    // 不在检查范围；自家插件除系统库外没有别的依赖，所
-    // 以任何 @loader_path 依赖缺文件都是外来加的。
-    // 同一轮里若废掉了 K 条幻影命令，再把被注入方整体
-    // +K 的库序号回退 K：(1) LC_DYLD_CHAINED_FIXUPS 导
-    // 入表每项的低字节 lib（dyld 实际绑定走的就是这张
-    // 表）；(2) LC_SYMTAB 里未定义符号 n_desc 的高字节
-    // 序号。序号大于 K 的才回退（≤K 的本就指向幻影库、
-    // 原文件里不存在这种符号，不动）。整个回退只在本轮
-    // 真废掉过幻影命令时才跑——干净文件一个字节都不动；
-    // 而能跑到回退的文件本来就已经坏到加载不了，修错
-    // 也不会让原本能用的配置变差。
-    private static func czfStripPhantomLoaderDeps(at fileURL: URL) -> Bool {
-        guard var bytes = try? [UInt8](Data(contentsOf: fileURL)), bytes.count >= 32 else { return false }
+    // CZFProxy 加载命令消毒：机上副本被重签/重打包环节动
+    // 过手脚——2026-11-06 拿到机上原文件逐字节核对确认：
+    // 注入方只把第一条库命令（Foundation）的名字字符串原
+    // 地改写成 @loader_path/Frameworks/<哈希>.dylib，命令
+    // 号、大小、版本字段、其余命令、全部符号序号一概没
+    // 动。于是 dyld 按假名找库报 Library not loaded；
+    // 3.8.12 把那条命令号废成 0x114515 后，Foundation 干
+    // 脆不在库列表里，序号 1 的符号全落到 libobjc 头上
+    //（Symbol not found: _NSClassFromString, Expected in
+    // libobjc）。3.8.13 一度误判成「序号被整体 +1」做了
+    // 回退，反而把好序号改坏、错误原样复现——序号手术已
+    // 全部撤销。正确修法：四条系统库命令的位置与名字固
+    // 定（与发布包原文件一致），按位置逐条核对：cmd 不是
+    // LC_LOAD_DYLIB 或名字对不上的，在原命令大小内把
+    // cmd 与名字改回原样（名字区写满，长度不够就不动）。
+    // 多于四条的库槽位只可能是外加的幻影命令，名字是
+    // @loader_path 且目标文件不存在的把命令号废掉（它不
+    // 占前四条的位置，废掉不影响序号）。干净文件返回
+    // nil，一个字节都不动。消毒只作用于包内副本的内存
+    // 镜像，落盘的是消毒结果，源文件本身不写。
+    private static let czfProxyCanonicalLibs = [
+        "/System/Library/Frameworks/Foundation.framework/Foundation",
+        "/usr/lib/libobjc.A.dylib",
+        "/usr/lib/libSystem.B.dylib",
+        "/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation",
+    ]
+
+    private static func czfSanitizedProxyData(_ data: Data, folderPath: String) -> Data? {
+        guard data.count >= 32 else { return nil }
+        var bytes = [UInt8](data)
         func u32le(_ off: Int) -> UInt32 {
             UInt32(bytes[off]) | UInt32(bytes[off + 1]) << 8 | UInt32(bytes[off + 2]) << 16 | UInt32(bytes[off + 3]) << 24
         }
         func u32be(_ off: Int) -> UInt32 {
             UInt32(bytes[off]) << 24 | UInt32(bytes[off + 1]) << 16 | UInt32(bytes[off + 2]) << 8 | UInt32(bytes[off + 3])
         }
-        let folderPath = fileURL.deletingLastPathComponent().path
         var patched = false
         // 单个 thin 64 位 slice：base 是 slice 在文件中的偏移
         func scanSlice(base: Int, size: Int) {
@@ -1237,15 +1232,15 @@ public final class CZFVPNManager {
             let ncmds = Int(u32le(base + 16))
             var off = base + 32
             let end = min(base + size, bytes.count)
-            var slicePhantoms = 0
-            var chainedFixups: (off: Int, size: Int)?
-            var symtab: (off: Int, count: Int)?
+            var libIndex = 0
             for _ in 0..<ncmds {
                 guard off + 8 <= end else { break }
                 let cmd = u32le(off)
                 let cmdsize = Int(u32le(off + 4))
                 guard cmdsize >= 8, off + cmdsize <= end else { break }
-                if cmd == 0xc || cmd == 0x80000018 || cmd == 0x1f || cmd == 0x80000023 {
+                // 库命令本体，或被旧版自愈废掉的库槽位
+                let isLibCmd = cmd == 0xc || cmd == 0x80000018 || cmd == 0x1f || cmd == 0x80000023 || cmd == 0x114515 || cmd == 0x114516
+                if isLibCmd {
                     // dylib_command：name.offset 在命令头 +8 处
                     let nameOff = Int(u32le(off + 8))
                     if nameOff >= 24, off + nameOff < off + cmdsize {
@@ -1255,7 +1250,24 @@ public final class CZFVPNManager {
                             name.append(Character(UnicodeScalar(bytes[p])))
                             p += 1
                         }
-                        if name.hasPrefix("@loader_path/") {
+                        if libIndex < czfProxyCanonicalLibs.count {
+                            let expected = czfProxyCanonicalLibs[libIndex]
+                            if cmd != 0xc || name != expected {
+                                let nameBytes = [UInt8](expected.utf8)
+                                if nameBytes.count + 1 <= cmdsize - nameOff {
+                                    bytes[off] = 0x0c
+                                    bytes[off + 1] = 0x00
+                                    bytes[off + 2] = 0x00
+                                    bytes[off + 3] = 0x00
+                                    for i in 0..<(cmdsize - nameOff) {
+                                        bytes[off + nameOff + i] = i < nameBytes.count ? nameBytes[i] : 0
+                                    }
+                                    patched = true
+                                }
+                            }
+                        } else if name.hasPrefix("@loader_path/") {
+                            // 第五条起的外加幻影：目标文件不在
+                            // 就废掉命令号（不占前四的位置）
                             let rest = String(name.dropFirst("@loader_path/".count))
                             let target = (folderPath as NSString).appendingPathComponent(rest)
                             if !FileManager.default.fileExists(atPath: target) {
@@ -1264,65 +1276,12 @@ public final class CZFVPNManager {
                                 bytes[off + 2] = 0x11
                                 bytes[off + 3] = 0x00
                                 patched = true
-                                slicePhantoms += 1
                             }
                         }
                     }
-                } else if cmd == 0x80000034 || cmd == 0x34, cmdsize >= 16 {
-                    // LC_DYLD_CHAINED_FIXUPS：dataoff/datasize
-                    // 是相对 slice 起点的文件偏移
-                    chainedFixups = (Int(u32le(off + 8)), Int(u32le(off + 12)))
-                } else if cmd == 0x2, cmdsize >= 24 {
-                    // LC_SYMTAB：symoff/nsyms（字符串表用不上）
-                    symtab = (Int(u32le(off + 8)), Int(u32le(off + 12)))
+                    libIndex += 1
                 }
                 off += cmdsize
-            }
-            guard slicePhantoms > 0 else { return }
-            let k = slicePhantoms
-            // (1) chained fixups 导入表：头部 +8 是导入表
-            // 相对偏移、+16 是导入项数；每项 4 字节，低字
-            // 节是库序号（其余位是 weak 标记与符号名偏移，
-            // 只改低字节就不碰它们）。发布包原文件已实测
-            // 核对过这套布局（86 项、序号 1–4 对应四个系
-            // 统库）。
-            if let fx = chainedFixups, fx.off > 0, fx.size >= 24 {
-                let blob = base + fx.off
-                if blob + 24 <= end, blob + fx.size <= bytes.count {
-                    let importsOff = Int(u32le(blob + 8))
-                    let importsCount = Int(u32le(blob + 16))
-                    let table = blob + importsOff
-                    if importsCount > 0, importsCount < 100000, table + importsCount * 4 <= blob + fx.size {
-                        for i in 0..<importsCount {
-                            let eoff = table + i * 4
-                            let lib = Int(bytes[eoff])
-                            if lib > k {
-                                bytes[eoff] = UInt8(lib - k)
-                            }
-                        }
-                    }
-                }
-            }
-            // (2) 符号表：nlist64 每项 16 字节，n_type 在
-            // +4、n_desc（UInt16）在 +6，序号在 n_desc 高
-            // 字节。只回退未定义且非调试项的符号，与原文
-            // 件的序号编码一致（实测 0x0100–0x0400）。
-            if let st = symtab, st.count > 0, st.count < 100000 {
-                let table = base + st.off
-                if table + st.count * 16 <= end {
-                    for i in 0..<st.count {
-                        let eoff = table + i * 16
-                        let nType = bytes[eoff + 4]
-                        guard nType & 0x0e == 0, nType & 0xe0 == 0 else { continue }
-                        var desc = Int(bytes[eoff + 6]) | Int(bytes[eoff + 7]) << 8
-                        let ordinal = desc >> 8
-                        if ordinal > k {
-                            desc -= k << 8
-                            bytes[eoff + 6] = UInt8(desc & 0xff)
-                            bytes[eoff + 7] = UInt8((desc >> 8) & 0xff)
-                        }
-                    }
-                }
             }
         }
         if u32le(0) == 0xfeedfacf {
@@ -1338,10 +1297,10 @@ public final class CZFVPNManager {
                 aoff += 20
             }
         } else {
-            return false
+            return nil
         }
-        guard patched else { return false }
-        return (try? Data(bytes).write(to: fileURL)) != nil
+        guard patched else { return nil }
+        return Data(bytes)
     }
 
     // 豁免名单内容：节点列表里每条链接都按起核心的同一条路

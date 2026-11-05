@@ -38,33 +38,18 @@
 
 @implementation DecoratedAppSceneViewController
 
-// 窗口按钮大小（CZF）：标题栏三键（最小化/全屏/关闭）
-// 的符号点数，设置页「应用设置」里滑杆可调，键
-// CZFWindowButtonSize（标准 UserDefaults，与设置页
-// @AppStorage 同一本）；没设过 = 16（原来的大小），
-// 读到的值夹在 5–20 之间防脏数据（范围由 Campbell
-// 于 2026-11-06 定：最大 20、最小 5）。
-static CGFloat CZFWindowButtonPointSize(void) {
-    NSUserDefaults *d = NSUserDefaults.lcUserDefaults;
-    if ([d objectForKey:@"CZFWindowButtonSize"] == nil) {
-        return 16.0;
-    }
-    CGFloat v = [d doubleForKey:@"CZFWindowButtonSize"];
-    if (v < 5.0) v = 5.0;
-    if (v > 20.0) v = 20.0;
-    return v;
-}
-
 // 窗口按钮胶囊（CZF）：三键装在一个自定义容器里（见建窗
-// 处），胶囊大小和键间距都由符号点数推导、跟着设置一起
-// 缩放：键直径 = 点数 + 14（16 → 30），间距 = 点数一半
-// （16 → 8）。
+// 处），键直径 = 符号点数 + 14、间距 = 点数一半。符号点数
+// 写死 16（原「窗口按钮大小」设置已按 Campbell
+// 2026-11-06 令删除）：直径 30、间距 8。
+static const CGFloat CZFWindowButtonPointSizeValue = 16.0;
+
 static CGFloat CZFWindowButtonDiameter(void) {
-    return CZFWindowButtonPointSize() + 14.0;
+    return CZFWindowButtonPointSizeValue + 14.0;
 }
 
 static CGFloat CZFWindowButtonSpacing(void) {
-    return round(CZFWindowButtonPointSize() * 0.5);
+    return round(CZFWindowButtonPointSizeValue * 0.5);
 }
 
 // 最大化时收起快捷栏（CZF）：设置页「多任务设置」的
@@ -98,24 +83,6 @@ static CGFloat CZFDefaultScaleRatio(void) {
     return v;
 }
 
-// 固定分辨率（CZF）：设置页「应用设置」的开关与宽高
-// （同一本标准 UserDefaults），与 AppSceneViewController
-// 里的同名静态函数是同一份设置的两处读法。逻辑尺寸由
-// 场景侧写死，这里只管画面等比适配进窗口。
-static BOOL CZFFixedResolutionEnabled(void) {
-    return [NSUserDefaults.lcUserDefaults boolForKey:@"CZFFixedResolutionEnabled"];
-}
-
-static CGSize CZFFixedResolutionSize(void) {
-    NSUserDefaults *d = NSUserDefaults.lcUserDefaults;
-    CGFloat w = [d doubleForKey:@"CZFFixedResolutionWidth"];
-    CGFloat h = [d doubleForKey:@"CZFFixedResolutionHeight"];
-    if (w < 100) w = 390;
-    if (h < 100) h = 844;
-    if (w > 2000) w = 2000;
-    if (h > 2000) h = 2000;
-    return CGSizeMake(w, h);
-}
 - (instancetype)initWindowName:(NSString*)windowName bundleId:(NSString*)bundleId dataUUID:(NSString*)dataUUID rootVC:(UIViewController*)rootVC {
     self = [super initWithNibName:nil bundle:nil];
     self.view = [[UIStackView alloc] initWithFrame:self.view.frame];
@@ -169,7 +136,7 @@ static CGSize CZFFixedResolutionSize(void) {
     // 都不动（2026-11-06 Campbell 截图反馈）。
     CGFloat buttonDiameter = CZFWindowButtonDiameter();
     CGFloat buttonSpacing = CZFWindowButtonSpacing();
-    UIImageSymbolConfiguration *buttonConfig = [UIImageSymbolConfiguration configurationWithPointSize:CZFWindowButtonPointSize() weight:UIImageSymbolWeightMedium];
+    UIImageSymbolConfiguration *buttonConfig = [UIImageSymbolConfiguration configurationWithPointSize:CZFWindowButtonPointSizeValue weight:UIImageSymbolWeightMedium];
     
     UIButton *minimizeButton = [UIButton buttonWithType:UIButtonTypeSystem];
     self.czfMinimizeButton = minimizeButton;
@@ -473,7 +440,7 @@ static CGSize CZFFixedResolutionSize(void) {
 }
 
 // 顶部窗口栏跟随内容缩放（Campbell 2026-11-06）：窗口
-// 内容被缩放比例/固定分辨率缩小时，标题栏也要跟着缩
+// 内容被缩放比例缩小时，标题栏也要跟着缩
 // ——栏高（在 czfSetChromeScale / updateVerticalConstraints
 // 里按 44 × 系数）、标题字号、三键的直径/间距/字形都按
 // 同一系数走，不然小窗里栏和按钮显得巨大、还会被系统
@@ -486,7 +453,7 @@ static CGSize CZFFixedResolutionSize(void) {
     CGFloat cs = self.czfChromeScale;
     CGFloat d = CZFWindowButtonDiameter() * cs;
     CGFloat sp = CZFWindowButtonSpacing() * cs;
-    UIImageSymbolConfiguration *config = [UIImageSymbolConfiguration configurationWithPointSize:CZFWindowButtonPointSize() * cs weight:UIImageSymbolWeightMedium];
+    UIImageSymbolConfiguration *config = [UIImageSymbolConfiguration configurationWithPointSize:CZFWindowButtonPointSizeValue * cs weight:UIImageSymbolWeightMedium];
     [self.czfMinimizeButton setImage:[[UIImage systemImageNamed:@"minus.circle"] imageWithConfiguration:config] forState:UIControlStateNormal];
     NSString *maximizeImageName = _isMaximized ? @"arrow.down.right.and.arrow.up.left.circle" : @"arrow.up.left.and.arrow.down.right.circle";
     [self.czfMaximizeButton setImage:[[UIImage systemImageNamed:maximizeImageName] imageWithConfiguration:config] forState:UIControlStateNormal];
@@ -512,8 +479,8 @@ static CGSize CZFFixedResolutionSize(void) {
     [self.navigationBar setNeedsLayout];
 }
 
-// 内容缩放的落点之一（czfApplyScaleRatio 与
-// czfApplyFixedResolution 结尾调用）：记下系数，并把
+// 内容缩放的落点（czfApplyScaleRatio 结尾调用）：记下
+// 系数，并把
 // 当前已生效的栏高相关约束常量原地改掉——不走动画，
 // 标题菜单拖滑杆时栏实时跟随。最大化藏栏中只记系数，
 // 还原时由 updateVerticalConstraints 按新系数重建。
@@ -583,90 +550,11 @@ static CGSize CZFFixedResolutionSize(void) {
     [self czfApplyScaleRatio:r];
 }
 
-// 固定分辨率开时窗口大小也跟着走（Campbell 2026-11-06）：
-// 打开窗口时把窗口内容区定成固定分辨率大小（窗口高 =
-// 分辨率高 + 标题栏高），画面 1:1 填满、不留边；分辨率
-// 比屏幕还大时整窗等比缩小。以窗口当前中心定位置，再
-// 按窗口状态还原同一套界限夹回可见范围。只在建窗落定
-// 那一刻做（czfApplyInitialScaleRatio 调用）；之后拖动
-// 改大小仍走 czfApplyFixedResolution 的等比适配，最大
-// 化时不动窗口。
-- (void)czfResizeWindowToFixedResolution {
-    if (self.isMaximized) {
-        return;
-    }
-    CGSize fixed = CZFFixedResolutionSize();
-    if (UIInterfaceOrientationIsLandscape(UIApp.statusBarOrientation)) {
-        fixed = CGSizeMake(fixed.height, fixed.width);
-    }
-    CGSize contentNow = self.appSceneVC.view.bounds.size;
-    if (fixed.width <= 0 || fixed.height <= 0 || contentNow.width <= 0 || contentNow.height <= 0) {
-        return;
-    }
-    CGFloat chrome = self.view.frame.size.height - contentNow.height;
-    if (chrome < 0) chrome = 0;
-    CGRect maxFrame = UIEdgeInsetsInsetRect(self.view.window.frame, self.view.window.safeAreaInsets);
-    if (CGRectIsEmpty(maxFrame)) {
-        maxFrame = UIScreen.mainScreen.bounds;
-    }
-    CGFloat s = MIN(1.0, MIN(maxFrame.size.width / fixed.width, maxFrame.size.height / (fixed.height + chrome)));
-    CGSize winSize = CGSizeMake(fixed.width * s, fixed.height * s + chrome);
-    CGRect frame = self.view.frame;
-    CGPoint center = CGPointMake(CGRectGetMidX(frame), CGRectGetMidY(frame));
-    frame.size = winSize;
-    frame.origin = CGPointMake(center.x - winSize.width / 2, center.y - winSize.height / 2);
-    CGRect winBounds = CGRectIsEmpty(self.view.window.bounds) ? UIScreen.mainScreen.bounds : self.view.window.bounds;
-    frame.origin.x = MAX(-winSize.width + 60, MIN(frame.origin.x, winBounds.size.width - 60));
-    frame.origin.y = MAX(0, MIN(frame.origin.y, winBounds.size.height - 60));
-    self.view.frame = frame;
-    [self.view layoutIfNeeded];
-    // didInitialize 里 updateOriginalFrame 在本方法之前
-    // 刚跑过，按新 frame 再刷一次，最大化/还原的参照
-    // 帧与新窗口大小一致（最大化时该方法自跳过）。
-    [self updateOriginalFrame];
-}
-
-// 固定分辨率的画面适配：场景已按设置值出图（见
-// AppSceneViewController 的帧覆盖），这里把内容等比
-// 缩放、居中放进当前窗口内容区，多余处留边。变换的
-// 合成顺序是先缩放后平移，内容层锚点在左上 (0,0)，
-// 与 czfApplyScaleRatio 的纯缩放同一条路。
-- (void)czfApplyFixedResolution {
-    CGSize fixed = CZFFixedResolutionSize();
-    if (UIInterfaceOrientationIsLandscape(UIApp.statusBarOrientation)) {
-        fixed = CGSizeMake(fixed.height, fixed.width);
-    }
-    CGSize area = self.appSceneVC.view.bounds.size;
-    if (fixed.width <= 0 || fixed.height <= 0 || area.width <= 0 || area.height <= 0) {
-        return;
-    }
-    CGFloat s = MIN(area.width / fixed.width, area.height / fixed.height);
-    CGFloat tx = (area.width - fixed.width * s) / 2;
-    CGFloat ty = (area.height - fixed.height * s) / 2;
-    if (self.appSceneVC.usesHostingControllerAPI) {
-        self.appSceneVC.contentView.transform = CGAffineTransformScale(CGAffineTransformMakeTranslation(tx, ty), s, s);
-    } else {
-        self.appSceneVC.contentView.layer.sublayerTransform = CATransform3DScale(CATransform3DMakeTranslation(tx, ty, 0), s, s, 1.0);
-    }
-    [self czfSetChromeScale:s];
-    __weak typeof(self) weakSelf = self;
-    [self.appSceneVC updateFrameWithSettingsBlock:^(UIMutableApplicationSceneSettings *settings) {
-        if(weakSelf.isMaximized) {
-            [weakSelf updateMaximizedSafeAreaWithSettings:settings];
-        } else {
-            settings.peripheryInsets = UIEdgeInsetsZero;
-            settings.safeAreaInsetsPortrait = UIEdgeInsetsZero;
-        }
-    }];
-}
-
 // 窗口尺寸落定后的统一重算入口（拖动结束、最大化/
-// 还原完成）：固定分辨率优先，其次自适应缩放；都没
-// 开就什么都不做，与现状一致。
+// 还原完成）：自适应缩放开时重算；没开就什么都不做，
+// 与现状一致。
 - (void)czfApplyScalePolicyForCurrentFrame {
-    if (CZFFixedResolutionEnabled()) {
-        [self czfApplyFixedResolution];
-    } else if (CZFAdaptiveScaleEnabled()) {
+    if (CZFAdaptiveScaleEnabled()) {
         [self czfApplyAdaptiveScaleRatio];
     }
 }
@@ -675,11 +563,6 @@ static CGSize CZFFixedResolutionSize(void) {
 // 次：自适应开 → 按宽度算；关 → 默认比例（1.0 时与现
 // 状一致，跳过不多跑一轮设置更新）。
 - (void)czfApplyInitialScaleRatio {
-    if (CZFFixedResolutionEnabled()) {
-        [self czfResizeWindowToFixedResolution];
-        [self czfApplyFixedResolution];
-        return;
-    }
     if (CZFAdaptiveScaleEnabled()) {
         [self czfApplyAdaptiveScaleRatio];
     } else {
@@ -880,7 +763,7 @@ static CGSize CZFFixedResolutionSize(void) {
             // 都重算，布局与按钮图标保持同步。
             [self updateVerticalConstraints];
             UIImage *maximizeImage = [UIImage systemImageNamed:@"arrow.up.left.and.arrow.down.right.circle"];
-            UIImageConfiguration *maximizeConfig = [UIImageSymbolConfiguration configurationWithPointSize:CZFWindowButtonPointSize() * self.czfChromeScale weight:UIImageSymbolWeightMedium];
+            UIImageConfiguration *maximizeConfig = [UIImageSymbolConfiguration configurationWithPointSize:CZFWindowButtonPointSizeValue * self.czfChromeScale weight:UIImageSymbolWeightMedium];
             [self.czfMaximizeButton setImage:[maximizeImage imageWithConfiguration:maximizeConfig] forState:UIControlStateNormal];
         }];
     } else {
@@ -906,7 +789,7 @@ static CGSize CZFFixedResolutionSize(void) {
             [self czfApplyScalePolicyForCurrentFrame];
             [self czfAutoCollapseDockIfNeeded];
             UIImage *restoreImage = [UIImage systemImageNamed:@"arrow.down.right.and.arrow.up.left.circle"];
-            UIImageConfiguration *restoreConfig = [UIImageSymbolConfiguration configurationWithPointSize:CZFWindowButtonPointSize() * self.czfChromeScale weight:UIImageSymbolWeightMedium];
+            UIImageConfiguration *restoreConfig = [UIImageSymbolConfiguration configurationWithPointSize:CZFWindowButtonPointSizeValue * self.czfChromeScale weight:UIImageSymbolWeightMedium];
             [self.czfMaximizeButton setImage:[restoreImage imageWithConfiguration:restoreConfig] forState:UIControlStateNormal];
         }];
     }

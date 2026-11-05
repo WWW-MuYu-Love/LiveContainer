@@ -236,13 +236,13 @@ final class LCAppBannerRootView: UIView {
         vpnBadge.isHidden = !CZFVPNManager.isEnabled(for: appInfo)
         vpnBadge.backgroundColor = .systemGreen
         sharedBadge.isHidden = !model.uiIsShared
-        sharedBadge.backgroundColor = .systemGray
+        sharedBadge.backgroundColor = .systemBlue
         jitBadge.isHidden = !model.uiIsJITNeeded || model.uiIs32bit
-        jitBadge.backgroundColor = .systemGray
+        jitBadge.backgroundColor = .systemOrange
         lockBadge.isHidden = !model.uiIsLocked || model.uiIsHidden
-        lockBadge.backgroundColor = .systemGray
+        lockBadge.backgroundColor = .systemRed
         bit32Badge.isHidden = !model.uiIs32bit
-        bit32Badge.backgroundColor = .systemGray
+        bit32Badge.backgroundColor = .systemPurple
         // 角标行：全隐藏时整行关掉（不占高、不占间距）
         badgeStack.isHidden = vpnBadge.isHidden && sharedBadge.isHidden && jitBadge.isHidden && bit32Badge.isHidden && lockBadge.isHidden
 

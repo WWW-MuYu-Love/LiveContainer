@@ -73,8 +73,6 @@ struct LCMultiLCManagementView : View, InstallAnotherLCButtonDelegate {
     @State var successShow = false
     @State var successInfo = ""
     
-    @State private var showShareSheet = false
-    @State private var shareURL : URL? = nil
     @StateObject private var installLC2Alert = AlertHelper<Int>()
     @State private var launchPriorityItems: [LaunchPriorityLC] = []
 
@@ -144,11 +142,6 @@ struct LCMultiLCManagementView : View, InstallAnotherLCButtonDelegate {
         } message: {
             Text("lc.settings.multiLCInstallAlertDesc %@".localizeWithFormat(storeName))
         }
-        .sheet(isPresented: $showShareSheet) {
-            if let shareURL = shareURL {
-                ActivityViewController(activityItems: [shareURL])
-            }
-        }
         .navigationTitle("lc.settings.multiLC".loc)
         .navigationBarTitleDisplayMode(.inline)
     }
@@ -214,8 +207,6 @@ struct LCMultiLCManagementView : View, InstallAnotherLCButtonDelegate {
             }
             let packedIpaUrl = try LCUtils.archiveIPA(withBundleName: name, includingExtraInfoDict: extraInfo)
             
-            shareURL = packedIpaUrl
-            
             if(result == 2) {
                 let launchURLStr = packedIpaUrl.absoluteString
                 let bookmark = try packedIpaUrl.bookmarkData(
@@ -228,7 +219,7 @@ struct LCMultiLCManagementView : View, InstallAnotherLCButtonDelegate {
                 return
             }
             
-            showShareSheet = true
+            czfPresentActivitySheet(items: [packedIpaUrl])
             
         } catch {
             errorInfo = error.localizedDescription

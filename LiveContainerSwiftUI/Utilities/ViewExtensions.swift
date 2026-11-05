@@ -298,15 +298,28 @@ struct BasicButtonStyle: ButtonStyle {
     }
 }
 
-struct ActivityViewController: UIViewControllerRepresentable {
-    var activityItems: [Any]
-    var applicationActivities: [UIActivity]? = nil
-
-    func makeUIViewController(context: UIViewControllerRepresentableContext<ActivityViewController>) -> UIActivityViewController {
-        return UIActivityViewController(activityItems: activityItems, applicationActivities: applicationActivities)
+// 系统分享表必须从最顶层控制器直接 present：把
+// UIActivityViewController 塞进 SwiftUI 的 .sheet 里
+// 只会弹出一张空白页（真机实测，模块页导出、多开管
+// 理页分享都中过，原 UIViewControllerRepresentable
+// 包装已删，勿再用）。找 key window 的 root 再沿
+// presentedViewController 走到最顶层去 present；
+// iPad 上给 popover 一个居中锚点免崩。延迟一拍执行，
+// 避开长按菜单/警告框还没收完的当口。
+func czfPresentActivitySheet(items: [Any]) {
+    DispatchQueue.main.async {
+        guard let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+              let root = scene.windows.first(where: { $0.isKeyWindow })?.rootViewController else { return }
+        var top = root
+        while let presented = top.presentedViewController { top = presented }
+        let vc = UIActivityViewController(activityItems: items, applicationActivities: nil)
+        if let pop = vc.popoverPresentationController {
+            pop.sourceView = top.view
+            pop.sourceRect = CGRect(x: top.view.bounds.midX, y: top.view.bounds.midY, width: 0, height: 0)
+            pop.permittedArrowDirections = []
+        }
+        top.present(vc, animated: true)
     }
-
-    func updateUIViewController(_ uiViewController: UIActivityViewController, context: UIViewControllerRepresentableContext<ActivityViewController>) {}
 }
 
 private class SizedHostingController<Content: View>: UIHostingController<Content> {

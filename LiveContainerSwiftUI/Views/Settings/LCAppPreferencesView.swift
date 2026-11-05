@@ -160,7 +160,7 @@ struct LCAppPreferencesView: View {
             }
             if czfPrefsSearchVisible("界面 外观 动态取色 深色图标 颜色 横幅") { interfaceSection }
             if czfPrefsSearchVisible("多开 分身 管理 multi 第二个") { multiLCSection }
-            if czfPrefsSearchVisible("多任务 multitask 窗口 缩放 比例 分辨率 固定 按钮 大小") { multitaskSection }
+            if czfPrefsSearchVisible("多任务 multitask 窗口 缩放 比例") { multitaskSection }
             if czfPrefsSearchVisible("保活 后台 无声音频 音频") { keepAliveSection }
         }
         .navigationTitle("应用设置")

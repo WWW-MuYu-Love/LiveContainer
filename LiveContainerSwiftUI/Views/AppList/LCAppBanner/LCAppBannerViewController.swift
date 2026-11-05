@@ -1088,6 +1088,13 @@ final class LCAppBannerViewController: UIViewController, UIContextMenuInteractio
     private func uninstall() async {
         let appInfo = configuration.model.appInfo
         let displayName = appInfo.displayName() ?? configuration.model.displayName
+        // 已锁定的 App 不许卸载（Campbell 2026-11-06 令）：
+        // 拦在最前面，连确认框都不弹，提示先解锁。解锁走
+        // 卡面现成的锁定开关（要过验证），这里只拦不卸。
+        if appInfo.isLocked {
+            showInfo("「\(displayName)」已锁定，请先解锁再卸载")
+            return
+        }
         let shouldUninstall = await presentConfirmation(
             title: "lc.appBanner.confirmUninstallTitle".loc,
             message: "lc.appBanner.confirmUninstallMsg %@".localizeWithFormat(displayName),
