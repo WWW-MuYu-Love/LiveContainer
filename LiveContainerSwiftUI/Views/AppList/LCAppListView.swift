@@ -133,21 +133,21 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
         if searchContext.debouncedQuery.isEmpty {
             return apps
         } else {
+            // 只搜 App 名称（用户定：应用页搜索只认名称，
+            // 不再连标识符一起匹配），没命中的直接隐藏。
             return apps.filter { app in
-                app.appInfo.displayName().localizedCaseInsensitiveContains(searchContext.debouncedQuery) ||
-                (app.appInfo.bundleIdentifier() ?? "").localizedCaseInsensitiveContains(searchContext.debouncedQuery)
+                app.appInfo.displayName().localizedCaseInsensitiveContains(searchContext.debouncedQuery)
             }
         }
     }
-    
+
     var filteredHiddenApps: [LCAppModel] {
         let apps = sortedHiddenApps
         if searchContext.debouncedQuery.isEmpty || !sharedModel.isHiddenAppUnlocked {
             return apps
         } else {
             return apps.filter { app in
-                app.appInfo.displayName().localizedCaseInsensitiveContains(searchContext.debouncedQuery) ||
-                (app.appInfo.bundleIdentifier() ?? "").localizedCaseInsensitiveContains(searchContext.debouncedQuery)
+                app.appInfo.displayName().localizedCaseInsensitiveContains(searchContext.debouncedQuery)
             }
         }
     }

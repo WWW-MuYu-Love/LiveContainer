@@ -120,6 +120,10 @@ final class AltStoreSourcesViewModel: ObservableObject {
         var source: AltStoreSource?
         var isLoading: Bool
         var error: String?
+        // 最近一次成功刷新的时间（源卡片上显示用），随
+        // UserDefaults 持久化；老缓存没有记录时用缓存
+        // 文件的修改时间兜底。
+        var lastRefreshedAt: Date?
         
         init(url: URL, isLoading: Bool = false, source: AltStoreSource? = nil, error: String? = nil) {
             self.url = url
@@ -153,6 +157,7 @@ final class AltStoreSourcesViewModel: ObservableObject {
     @Published private(set) var sources: [SourceItem] = []
     @Published var isRefreshingAll = false
     private let defaultsKey = "LCAltStoreSourceURLs"
+    private let refreshTimesKey = "LCAltStoreSourceRefreshTimes"
 
     private let cacheDirectoryName = "AltStoreSourceCache"
     
@@ -181,6 +186,9 @@ final class AltStoreSourcesViewModel: ObservableObject {
     func removeSource(_ item: SourceItem) {
         sources.removeAll { $0.id == item.id }
         persistSources()
+        var times = storedRefreshTimes()
+        times.removeValue(forKey: item.url.absoluteString)
+        UserDefaults.standard.set(times, forKey: refreshTimesKey)
         removeCache(for: item.url)
     }
     
@@ -227,11 +235,13 @@ final class AltStoreSourcesViewModel: ObservableObject {
             }
             if let previousData, previousData == data {
                 sources[sourceIndex].isLoading = false
+                markRefreshed(url: url)
                 return
             }
             sources[sourceIndex].source = source
             sources[sourceIndex].isLoading = false
             storeCache(data, for: url)
+            markRefreshed(url: url)
         } catch {
             if let sourceIndex = sources.firstIndex(where: { $0.url == url }) {
                 sources[sourceIndex].error = error.localizedDescription
@@ -244,6 +254,7 @@ final class AltStoreSourcesViewModel: ObservableObject {
         let defaults = UserDefaults.standard
         let stored = defaults.array(forKey: defaultsKey) as? [String] ?? []
         let urls = stored.compactMap { URL(string: $0) }
+        let times = storedRefreshTimes()
         self.sources = urls.map { SourceItem(url: $0, isLoading: false) }
         for index in sources.indices {
             let url = sources[index].url
@@ -251,6 +262,30 @@ final class AltStoreSourcesViewModel: ObservableObject {
                let cachedSource = try? AltStoreSourceLoader.decode(from: data, baseURL: url) {
                 sources[index].source = cachedSource
             }
+            // 最近刷新时间：先用持久化记录；没有记录（升级
+            // 前的老缓存）时用缓存文件的修改时间兜底。
+            if let saved = times[url.absoluteString] {
+                sources[index].lastRefreshedAt = Date(timeIntervalSince1970: saved)
+            } else if let fileURL = cacheFileURL(for: url),
+                      let attrs = try? FileManager.default.attributesOfItem(atPath: fileURL.path),
+                      let mtime = attrs[.modificationDate] as? Date {
+                sources[index].lastRefreshedAt = mtime
+            }
+        }
+    }
+
+    private func storedRefreshTimes() -> [String: Double] {
+        UserDefaults.standard.dictionary(forKey: refreshTimesKey) as? [String: Double] ?? [:]
+    }
+
+    // 刷新成功（内容有无变化都算）后记下时间并持久化。
+    private func markRefreshed(url: URL) {
+        let now = Date()
+        var times = storedRefreshTimes()
+        times[url.absoluteString] = now.timeIntervalSince1970
+        UserDefaults.standard.set(times, forKey: refreshTimesKey)
+        if let index = sources.firstIndex(where: { $0.url == url }) {
+            sources[index].lastRefreshedAt = now
         }
     }
     
@@ -580,6 +615,9 @@ struct LCSourcesView: View {
                     List {
                         ForEach(viewModel.sources, id: \.id) { item in
                                 let apps = filteredApps(for: item)
+                                // 搜索时没命中就整源隐藏（用户定）：
+                                // 源名命中或有 app 命中才留这张卡。
+                                if !isFiltering || sourceNameMatches(item) || !apps.isEmpty {
                                 AltStoreSourceSectionView(
                                     item: item,
                                     filteredApps: apps,
@@ -602,9 +640,10 @@ struct LCSourcesView: View {
                                         }
                                     }
                                 )
+                                }
                         }
 
-                        if totalFilteredAppCount == 0 {
+                        if totalFilteredAppCount == 0 && !viewModel.sources.contains(where: { sourceNameMatches($0) }) {
                             VStack(spacing: 8) {
                                 Text("lc.sources.section.noApps".loc)
                                     .foregroundStyle(.gray)
@@ -772,10 +811,21 @@ struct LCSourcesView: View {
         }
     }
     
+    // 源名命中（用户定：搜索既搜 app 名也搜源名）：命中
+    // 源名时整源保留（app 全列），下面的过滤直接放行。
+    private func sourceNameMatches(_ item: AltStoreSourcesViewModel.SourceItem) -> Bool {
+        let query = searchContext.debouncedQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return false }
+        return item.displayName.lowercased().contains(query.lowercased())
+    }
+
     private func filteredApps(for item: AltStoreSourcesViewModel.SourceItem) -> [AltStoreSourceApp] {
         guard let source = item.source else { return [] }
         let query = searchContext.debouncedQuery.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty else {
+            return source.apps
+        }
+        if sourceNameMatches(item) {
             return source.apps
         }
         return source.apps.filter { app in
@@ -1155,6 +1205,44 @@ private struct AltStoreSourceSectionView: View {
     let onToggleSelect: (AltStoreSourceApp) -> Void
     @State private var showAllApps = false
 
+    // 合计大小：各 app 最新版大小求和；老式源没有大小
+    // 数据（全为 nil）时合计为 0，该胶囊不显示。
+    private var totalSizeText: String? {
+        guard let apps = item.source?.apps else { return nil }
+        let total = apps.compactMap { $0.latestVersion?.size }.reduce(0, +)
+        guard total > 0 else { return nil }
+        return ByteCountFormatter.string(fromByteCount: total, countStyle: .file)
+    }
+
+    // 最近刷新时间（用户定：是这个源上次成功刷新的时间，
+    // 不是 app 发布时间）：相对显示（刚刚/x 分钟前/
+    // x 小时前/x 天前，更早给日期）。从没刷成功过则不显示。
+    private var latestUpdateText: String? {
+        guard let refreshedAt = item.lastRefreshedAt else { return nil }
+        let secs = max(0, Date().timeIntervalSince(refreshedAt))
+        if secs < 60 { return "刚刚" }
+        if secs < 3600 { return "\(Int(secs / 60)) 分钟前" }
+        if secs < 86400 { return "\(Int(secs / 3600)) 小时前" }
+        if secs < 86400 * 30 { return "\(Int(secs / 86400)) 天前" }
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy/M/d"
+        return formatter.string(from: refreshedAt)
+    }
+
+    private func headerChip(icon: String, text: String) -> some View {
+        HStack(spacing: 4) {
+            Image(systemName: icon)
+                .font(.system(size: 11, weight: .medium))
+            Text(text)
+                .font(.system(size: 12))
+                .lineLimit(1)
+        }
+        .foregroundColor(.secondary)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(Capsule().fill(Color.secondary.opacity(0.12)))
+    }
+
     var body: some View {
         // 一源一段一卡（照小火箭/节点组）：源头是段卡的
         // 第一行——箭头 + 图标 + 名称一列、副标题紧贴名
@@ -1165,35 +1253,50 @@ private struct AltStoreSourceSectionView: View {
         // 左右滑挂头行：右滑到底刷新、左滑删除走确认。
         Section {
             HStack(alignment: .center, spacing: 10) {
-                Image(systemName: isExpanded || isFiltering ? "chevron.down" : "chevron.right")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(.secondary)
                 SourceIconView(url: item.primaryIconURL)
-                    .frame(width: 32, height: 32)
-                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .frame(width: 48, height: 48)
+                    .clipShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
                 VStack(alignment: .leading, spacing: 2) {
-                    // 名称字号调小：title2 粗体（约 22）→ 17 半粗
+                    // 源信息行照参考图改（用户）：名称下方放源的
+                    // 原地址（副标题去掉），再下面一排信息胶囊：
+                    // 几个应用 / 合计大小 / 最近刷新时间。
                     Text(item.source?.name ?? item.displayName)
-                        .font(.system(size: 17, weight: .semibold))
+                        .font(.system(size: 15, weight: .bold))
                         .lineLimit(1)
-                    // 副标题收进卡里：名称正下方一行小字，
-                    // 不再飘在卡片外面的白底上
-                    if let subtitle = item.source?.subtitle, !subtitle.isEmpty {
-                        Text(subtitle)
-                            .font(.system(size: 12))
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                    } else if item.source == nil, let host = item.url.host {
-                        Text(host)
-                            .font(.system(size: 12))
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
+                    Text(item.url.absoluteString)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    if let source = item.source {
+                        HStack(spacing: 6) {
+                            headerChip(icon: "square.grid.2x2", text: "\(source.apps.count) 个应用")
+                            if let totalSizeText {
+                                headerChip(icon: "doc", text: totalSizeText)
+                            }
+                            if let latestUpdateText {
+                                headerChip(icon: "clock", text: latestUpdateText)
+                            }
+                        }
+                        .padding(.top, 4)
                     }
                 }
                 Spacer()
                 if item.isLoading {
                     ProgressView()
                 }
+                // 三角挪到行尾（用户：源头图标要和下面 app 行的
+                // 图标左对齐，三角在左边时头行图标被它占位右
+                // 移，对不齐）。三角只用一个 chevron.right 旋转
+                // 90° 表示展开：旧写法在 right/down 之间换图，
+                // 两符号本征宽度不同，切换瞬间会把后面的图标
+                // 和名称整列往右顶（用户录屏实测）；固定框 +
+                // 原地旋转，布局宽度恒定，动画只转不移。
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 22, height: 22)
+                    .rotationEffect(.degrees(isExpanded || isFiltering ? 90 : 0))
             }
             .listRowInsets(EdgeInsets(top: 10, leading: 16, bottom: 10, trailing: 16))
             .contentShape(Rectangle())
@@ -1213,8 +1316,9 @@ private struct AltStoreSourceSectionView: View {
                 }
                 .tint(.blue)
             }
-            // 左滑弹出删除按钮，点按走原有的删除确认弹窗
-            .swipeActions(edge: .trailing) {
+            // 左滑：滑到底直接触发删除（带确认弹窗），
+            // 露出按钮点按删除同样走确认弹窗（用户定）
+            .swipeActions(edge: .trailing, allowsFullSwipe: true) {
                 Button(role: .destructive) {
                     onRemove()
                 } label: {
@@ -1237,7 +1341,7 @@ private struct AltStoreSourceSectionView: View {
             } else if let source = item.source, isExpanded || isFiltering {
                 ForEach(filteredApps[0..<(showAllApps ? filteredApps.count : min(50, filteredApps.count))]) { app in
                     LCSourceAppBanner(app: app, source: source, installAction: onInstall, installAsNewAction: onInstallAsNew, downloadAction: onDownload, isBatchMode: isBatchMode, isSelected: selectedIDs.contains(app.bundleIdentifier), onToggleSelect: { onToggleSelect(app) })
-                        .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
+                        .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
                 }
                 if filteredApps.isEmpty {
                     if source.apps.isEmpty || isFiltering {
@@ -1279,8 +1383,6 @@ private struct LCSourceAppBanner: View {
     @AppStorage("dynamicColors", store: LCUtils.appGroupUserDefault) private var dynamicColors = true
     @Environment(\.colorScheme) var colorScheme
     @EnvironmentObject private var sharedModel: SharedModel
-    @State private var showDetail = false
-    @State private var copiedCardURL = false
     // 忽略/取消忽略后翻一下，强制本行按新状态重画
     @State private var ignoreRefresh = false
     // 机制 2：多开时“打开”绝不静默取首个，多个实例弹实例选择
@@ -1327,43 +1429,60 @@ private struct LCSourceAppBanner: View {
         let pluginURL = LCPath.tweakPath.appendingPathComponent(app.name).appendingPathComponent(downloadURL.lastPathComponent)
         return FileManager.default.fileExists(atPath: pluginURL.path)
     }
+
+    private var isDylibApp: Bool {
+        app.latestVersion?.downloadURL.pathExtension.lowercased() == "dylib"
+    }
     
     private var primaryColor: Color {
         guard dynamicColors else { return Color("FontColor") }
         return app.tintColor ?? source.tintColor ?? Color("FontColor")
     }
     
-    private var metadataText: String {
-        guard let latest = app.latestVersion else {
-            return app.bundleIdentifier
-        }
-        if let build = latest.buildVersion, !build.isEmpty {
-            return "\(latest.version) (\(build)) • \(app.bundleIdentifier)"
-        }
-        return "\(latest.version) • \(app.bundleIdentifier)"
+    // 行样式改图二（SideStore Team Picks）风：名称下只放
+    // 标识符，简介去掉；版本/包大小/更新时间做成小图标胶囊
+    // 标签排在标识符下面。包大小只有新式源（versions 数组）
+    // 才有，旧式源为 nil，该标签自动不显示。
+    private var sizeText: String? {
+        guard let size = app.latestVersion?.size else { return nil }
+        return ByteCountFormatter.string(fromByteCount: size, countStyle: .file)
     }
-    
-    private var subtitleText: String {
-        if let subtitle = app.subtitle, !subtitle.isEmpty {
-            return subtitle
+
+    private var releaseDateText: String? {
+        guard let date = app.latestVersion?.releaseDate else { return nil }
+        let formatter = DateFormatter()
+        // 同年只显示月/日（图二就是 12/8 这种），跨年带年份
+        formatter.dateFormat = Calendar.current.isDate(date, equalTo: Date(), toGranularity: .year) ? "M/d" : "yyyy/M/d"
+        return formatter.string(from: date)
+    }
+
+    private func metaChip(icon: String, text: String) -> some View {
+        HStack(spacing: 4) {
+            Image(systemName: icon)
+                .font(.system(size: 7.5, weight: .medium))
+            Text(text)
+                .font(.system(size: 9))
+                .lineLimit(1)
         }
-        if let developer = app.developerName, !developer.isEmpty {
-            return developer
-        }
-        return ""
+        .foregroundColor(.secondary)
+        .padding(.horizontal, 3.5)
+        .padding(.vertical, 2)
+        .background(Capsule().fill(Color.secondary.opacity(0.12)))
     }
     
     var body: some View {
-        HStack {
-            HStack(alignment: .center, spacing: 12) {
+        HStack(alignment: .center) {
+            // 图标与右侧三行文字整体垂直居中对齐（用户定）
+            HStack(alignment: .center, spacing: 10) {
                 SourceIconView(url: app.iconURL)
-                    .frame(width: 60, height: 60)
-                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-                    .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(Color.primary.opacity(0.08), lineWidth: 1))
-                VStack(alignment: .leading, spacing: 6) {
+                    .frame(width: 32, height: 32)
+                    .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).strokeBorder(Color.primary.opacity(0.08), lineWidth: 1))
+                VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: 6) {
                         Text(app.name)
-                            .font(.headline)
+                            .font(.system(size: 13, weight: .bold))
+                            .lineLimit(1)
                         if app.isBeta {
                             Text("lc.sources.badge.beta".loc.uppercased())
                                 .font(.caption2.weight(.heavy))
@@ -1373,36 +1492,28 @@ private struct LCSourceAppBanner: View {
                                 .background(Capsule().fill(Color.orange))
                         }
                     }
-                    // 版本·包名行与下面一行按用户要求再调小一
-                    // 号（12→11、11→10），下面一行放开到两行，
-                    // 尽量显示完整而不是早早截断。
-                    Text(metadataText)
-                        .font(.system(size: 11))
+                    // 标识符直接放名称下面一行
+                    Text(app.bundleIdentifier)
+                        .font(.system(size: 10))
                         .foregroundColor(.secondary)
-                        .lineLimit(2)
-                    if !subtitleText.isEmpty {
-                        Text(subtitleText)
-                            .font(.system(size: 10))
-                            .foregroundColor(.secondary)
-                            .lineLimit(2)
+                        .lineLimit(1)
+                    // 图二式信息胶囊：版本 · 包大小 · 更新时间
+                    if let latest = app.latestVersion {
+                        HStack(spacing: 6) {
+                            metaChip(icon: "tag", text: latest.version)
+                            if let sizeText {
+                                metaChip(icon: "doc", text: sizeText)
+                            }
+                            if let releaseDateText {
+                                metaChip(icon: "calendar", text: releaseDateText)
+                            }
+                        }
+                        .padding(.top, 1)
                     }
                 }
             }
             .allowsHitTesting(false)
             Spacer()
-            // 卡片上可见的复制按钮：点一下复制该 App 的下载地址
-            if let downloadURL = app.latestVersion?.downloadURL {
-                Button {
-                    UIPasteboard.general.string = downloadURL.absoluteString
-                    copiedCardURL = true
-                } label: {
-                    Image(systemName: copiedCardURL ? "checkmark" : "doc.on.doc")
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundColor(.secondary)
-                        .frame(width: 32, height: 32)
-                }
-                .buttonStyle(BasicButtonStyle())
-            }
             if isBatchMode {
                 Button {
                     onToggleSelect()
@@ -1414,120 +1525,60 @@ private struct LCSourceAppBanner: View {
                 .buttonStyle(BasicButtonStyle())
                 .padding(.trailing, 8)
             } else {
-                // 「下载」按钮已按要求去掉：行内只保留安装/更新/打开
-                // 等状态按钮（下载的底层函数和参数还留着，详情页等
-                // 其他入口不受影响）
-                let isDylib = (app.latestVersion?.downloadURL.pathExtension.lowercased() == "dylib")
-                if isDylib && isPluginInstalled {
-                    // 状态/动作钮统一与应用页启动钮同尺寸：
-                    // 高 30、字 14 粗（用户定）
-                    Text("lc.common.installed".loc)
-                        .font(.system(size: 14, weight: .bold))
-                        .foregroundColor(.white)
-                        .lineLimit(1)
-                        .padding(.horizontal, 16)
-                        .frame(height: 30)
-                        .background(Capsule().fill(Color.green))
-                        .clipShape(Capsule())
-                } else if !isDylib && isInstalled && hasUpdate {
-                    HStack(spacing: 6) {
-                        Button {
-                            installAction(app)
-                        } label: {
-                            Text("更新")
-                                .font(.system(size: 14, weight: .bold))
-                                .foregroundColor(.white)
-                                .lineLimit(1)
-                                .frame(height: 30)
-                        }
-                        .buttonStyle(BasicButtonStyle())
-                        .padding(.horizontal, 16)
-                        .frame(height: 30)
-                        .background(
-                            Capsule().fill(Color.orange)
-                        )
-                        .clipShape(Capsule())
-                        Button {
-                            installAsNewAction(app)
-                        } label: {
-                            Text("新建")
-                                .font(.system(size: 14, weight: .bold))
-                                .foregroundColor(.white)
-                                .lineLimit(1)
-                                .frame(height: 30)
-                        }
-                        .buttonStyle(BasicButtonStyle())
-                        .padding(.horizontal, 12)
-                        .frame(height: 30)
-                        .background(Capsule().fill(Color.purple))
-                        .clipShape(Capsule())
-                    }
-                } else if !isDylib && isInstalled {
-                    HStack(spacing: 6) {
-                        Button {
-                            let matches = installedAppModels
-                            if matches.count == 1, let only = matches.first {
-                                Task { try? await only.runApp() }
-                            } else if matches.count > 1 {
-                                showInstancePicker = true
-                            }
-                        } label: {
-                            Text("lc.common.open".loc)
-                                .font(.system(size: 14, weight: .bold))
-                                .foregroundColor(.white)
-                                .lineLimit(1)
-                                .frame(height: 30)
-                        }
-                        .buttonStyle(BasicButtonStyle())
-                        .padding(.horizontal, 16)
-                        .frame(height: 30)
-                        .background(
-                            Capsule().fill(Color.green)
-                        )
-                        .clipShape(Capsule())
-                        Button {
-                            installAsNewAction(app)
-                        } label: {
-                            Text("新建")
-                                .font(.system(size: 14, weight: .bold))
-                                .foregroundColor(.white)
-                                .lineLimit(1)
-                                .frame(height: 30)
-                        }
-                        .buttonStyle(BasicButtonStyle())
-                        .padding(.horizontal, 12)
-                        .frame(height: 30)
-                        .background(Capsule().fill(Color.purple))
-                        .clipShape(Capsule())
-                    }
-                } else {
-                    Button {
-                        installAction(app)
-                    } label: {
-                        Text("lc.common.install".loc)
-                            .font(.system(size: 14, weight: .bold))
-                            .foregroundColor(.white)
-                            .lineLimit(1)
-                            .frame(height: 30)
-                    }
-                    .buttonStyle(BasicButtonStyle())
-                    .padding(.horizontal, 16)
-                    .frame(height: 30)
-                    .background(
-                        Capsule().fill(dynamicColors ? primaryColor : Color("FontColor"))
-                    )
-                    .clipShape(Capsule())
-                }
+                // 行内不放任何动作按钮，右端小箭头也已按用户
+                // 要求去掉；安装/更新/打开/复制地址全部是滑动
+                // 动作，挂在 body 末尾的 swipeActions 上。
+                EmptyView()
             }
         }
         // 不再自带卡背景/圆角：本行已是源段卡里的一行，
         // 段卡即边框（用户：别套两层、别留多余间隙）。
-        .frame(height: 72)
-        .onTapGesture {
+        // 图二式三行布局（名/标识符/胶囊行）：比源信息行
+        // （应用页横幅同大）再小一档后的高度（用户定）。
+        .frame(height: 48)
+        // 滑动动作（用户：和节点行一样）——左滑是安装/更新
+        // （用户定名：没装写「安装」，有新版写「更新」并用
+        // 橙色，和旧更新钮一致，滑到底直接触发）；已装的
+        // 普通应用再加打开（多开弹实例选择，和旧钮同一套
+        // 逻辑；「新建」已按用户要求去掉）；右滑是复制下载
+        // 地址（拉满直接复制，露出按钮点按也行）。批量模式
+        // 不挂滑动，避免和点选冲突。
+        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
             if !isBatchMode {
-                showDetail = true
+                Button {
+                    installAction(app)
+                } label: {
+                    Label(hasUpdate ? "更新" : "lc.common.install".loc, systemImage: "arrow.down.to.line")
+                }
+                .tint(hasUpdate ? .orange : primaryColor)
+                if !isDylibApp && isInstalled {
+                    Button {
+                        let matches = installedAppModels
+                        if matches.count == 1, let only = matches.first {
+                            Task { try? await only.runApp() }
+                        } else if matches.count > 1 {
+                            showInstancePicker = true
+                        }
+                    } label: {
+                        Label("lc.common.open".loc, systemImage: "play.fill")
+                    }
+                    .tint(.green)
+                }
             }
         }
+        .swipeActions(edge: .leading, allowsFullSwipe: true) {
+            if !isBatchMode, let downloadURL = app.latestVersion?.downloadURL {
+                Button {
+                    UIPasteboard.general.string = downloadURL.absoluteString
+                    UINotificationFeedbackGenerator().notificationOccurred(.success)
+                } label: {
+                    Label("复制地址", systemImage: "doc.on.doc")
+                }
+                .tint(.gray)
+            }
+        }
+        // 点行不再进详情（用户：不用）：行上只保留滑动动作
+        // 和长按菜单（忽略此版本）。
         .contextMenu {
             if hasUpdate, let version = app.latestVersion?.version {
                 Button {
@@ -1549,9 +1600,6 @@ private struct LCSourceAppBanner: View {
                     Label("取消忽略更新", systemImage: "bell")
                 }
             }
-        }
-        .sheet(isPresented: $showDetail) {
-            LCSourceAppDetailView(app: app, source: source)
         }
         .sheet(isPresented: $showInstancePicker) {
             NavigationView {

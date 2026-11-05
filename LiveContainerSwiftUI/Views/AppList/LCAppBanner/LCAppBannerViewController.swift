@@ -19,24 +19,39 @@ final class LCAppBannerViewController: UIViewController, UIContextMenuInteractio
 
     private let delegate: LCAppBannerDelegate
     private let bannerView = LCAppBannerRootView()
-    // 滑动操作层：容器装横滑按钮（左 VPN、右备份/卸载），
+    // 滑动操作层：容器装横滑按钮（右滑 VPN、左滑一颗尾钮），
     // bannerView 盖在上面，横拖时平移露出按钮（用户定版）。
+    // 备份已按用户要求挪进长按菜单第一位，不再占横滑。
     private let swipeContainerView = UIView()
     private let vpnSwipeButton = LCBannerSwipeButton(symbol: "globe", title: "VPN", color: .systemGray)
-    private let backupSwipeButton = LCBannerSwipeButton(symbol: "tray.and.arrow.down.fill", title: "备份", color: .systemBlue)
-    private let uninstallSwipeButton = LCBannerSwipeButton(symbol: "trash.fill", title: "卸载", color: .systemRed)
+    private let trailingSwipeButton = LCBannerSwipeButton(symbol: "trash.fill", title: "卸载", color: .systemRed)
     private var swipeOffset: CGFloat = 0
     private var swipeStartOffset: CGFloat = 0
     private var swipePanGesture: UIPanGestureRecognizer?
     private var swipeCloseTapGesture: UITapGestureRecognizer?
+    private var swipeButtonTapGesture: UITapGestureRecognizer?
+    // 归位动画逐帧补间（CADisplayLink）：卡片平移和按钮
+    // 帧必须读同一个逐帧偏移，按钮才跟着卡片一起缩回、
+    // 在卡片盖满瞬间才消失；早先在动画块里按最终偏移
+    // 排帧，按钮会僵在原地最后突然消失（用户录屏指出）。
+    private var swipeDisplayLink: CADisplayLink?
+    private var swipeTweenFrom: CGFloat = 0
+    private var swipeTweenTo: CGFloat = 0
+    private var swipeTweenStart: CFTimeInterval = 0
     // 滑动归位（用户定：点其他位置就归位）：全列表只许
     // 一行滑开着，新行一滑开上一行自动收回；列表层点别
     // 处/开始滚动会发 czfCloseSwipeNotification，滑开着
     // 的行收到就收回（正在拖的那行除外）。
     static let czfCloseSwipeNotification = Notification.Name("CZFCloseOpenBannerSwipe")
-    // 卸载钮业务可用性：共享态的 App 不能卸载（原先借
-    // isHidden 表达，与滑动可见性拆开后独立成这个判定）
-    private var showsUninstall: Bool { !configuration.model.uiIsShared }
+    // 左滑尾钮的业务形态：普通 App 是卸载；开了分享的
+    // App 不显示卸载，换成蓝色的「分享」开关钮（点按=
+    // 取消分享，与设置页同款逻辑；LC2 形态下设置页不给
+    // 取消分享，这里同样不出钮）。
+    private enum TrailingSwipeKind { case uninstall, unshare, none }
+    private var trailingSwipeKind: TrailingSwipeKind {
+        if !configuration.model.uiIsShared { return .uninstall }
+        return DataManager.shared.model.multiLCStatus != 2 ? .unshare : .none
+    }
     private static weak var czfOpenSwipeBanner: LCAppBannerViewController?
     private var swipeCloseObserver: NSObjectProtocol?
     private var configuration: LCAppBannerConfiguration
@@ -67,7 +82,7 @@ final class LCAppBannerViewController: UIViewController, UIContextMenuInteractio
         // 左右边缘，卡片滑开时直接被「揭」出来，不再躲
         // 在半透明卡后缩放淡入。帧全手动（layoutSwipe
         // Buttons 按露出区排），不用约束。
-        for button in [vpnSwipeButton, backupSwipeButton, uninstallSwipeButton] {
+        for button in [vpnSwipeButton, trailingSwipeButton] {
             button.isHidden = true
             swipeContainerView.addSubview(button)
         }
@@ -123,8 +138,19 @@ final class LCAppBannerViewController: UIViewController, UIContextMenuInteractio
         }
 
         vpnSwipeButton.addTarget(self, action: #selector(vpnSwipeTapped), for: .touchUpInside)
-        backupSwipeButton.addTarget(self, action: #selector(backupSwipeTapped), for: .touchUpInside)
-        uninstallSwipeButton.addTarget(self, action: #selector(uninstallSwipeTapped), for: .touchUpInside)
+        trailingSwipeButton.addTarget(self, action: #selector(trailingSwipeTapped), for: .touchUpInside)
+
+        // 滑开后点按按钮要稳（用户：右滑 VPN 要可以点按）：
+        // 列表层的 SwiftUI 点按手势会把控件的 touchUpInside
+        // 吞掉（点按只归位不触发），所以容器上再挂一个点按
+        // 识别器专门接管露出来的按钮区——手势识别器不吃
+        // 这套取消，命中哪颗钮就执行哪颗。命中判定在代理
+        // shouldReceive 里做，没命中按钮区就放行给别人。
+        let buttonTap = UITapGestureRecognizer(target: self, action: #selector(swipeButtonAreaTapped(_:)))
+        buttonTap.delegate = self
+        buttonTap.cancelsTouchesInView = true
+        swipeContainerView.addGestureRecognizer(buttonTap)
+        swipeButtonTapGesture = buttonTap
 
         // dock 变化（窗口开关）即重绘画片，卡片状态才跟得上；
         // 订阅即发一次当前值，多一次无害重绘。
@@ -153,6 +179,7 @@ final class LCAppBannerViewController: UIViewController, UIContextMenuInteractio
     }
 
     deinit {
+        swipeDisplayLink?.invalidate()
         if let swipeCloseObserver {
             NotificationCenter.default.removeObserver(swipeCloseObserver)
         }
@@ -186,10 +213,20 @@ final class LCAppBannerViewController: UIViewController, UIContextMenuInteractio
             darkModeIcon: configuration.darkModeIcon,
             traitCollection: traitCollection
         )
-        // 横滑按钮态跟模型走：共享 App 不给卸载；VPN 按钮
-        // 绿=已开、灰=未开。
-        // 卸载可用性走 showsUninstall（帧布局/宽度都读它）；
-        // 钮本身的 hidden 现在归滑动可见性管，不再混用。
+        // 横滑按钮态跟模型走：尾钮形态读 trailingSwipeKind
+        // （卸载/取消分享/无），刷新时按形态换图标、文字、
+        // 颜色；VPN 按钮绿=已开、灰=未开。
+        switch trailingSwipeKind {
+        case .uninstall:
+            trailingSwipeButton.configure(symbol: "trash.fill", title: "卸载", color: .systemRed)
+        case .unshare:
+            // 分享开关钮（用户定）：文字只写「分享」，开了
+            // 分享才是蓝色（关着的 VPN 钮灰色同理）；这颗
+            // 只在已分享时出现，此时不显示卸载。
+            trailingSwipeButton.configure(symbol: "person.2.fill", title: "分享", color: .systemBlue)
+        case .none:
+            break
+        }
         layoutSwipeButtons()
         vpnSwipeButton.setColor(CZFVPNManager.isEnabled(for: configuration.model.appInfo) ? .systemGreen : .systemGray)
     }
@@ -571,6 +608,16 @@ final class LCAppBannerViewController: UIViewController, UIContextMenuInteractio
         let model = configuration.model
         var menuChildren: [UIMenuElement] = []
 
+        // 备份放整个菜单第一位（用户定：从左滑挪过来）
+        menuChildren.append(UIMenu(title: "", options: .displayInline, children: [
+            UIAction(
+                title: "备份",
+                image: UIImage(systemName: "tray.and.arrow.down.fill")
+            ) { [weak self] _ in
+                self?.backupApp()
+            }
+        ]))
+
         // Containers Picker（多容器才出现，原样保留）
         if model.uiContainers.count > 1 {
             let containerActions = model.uiContainers.map { [weak self] container in
@@ -670,33 +717,35 @@ final class LCAppBannerViewController: UIViewController, UIContextMenuInteractio
         }
     }
 
-    // MARK: - 横滑操作（左滑备份/卸载、右滑 VPN）
+    // MARK: - 横滑操作（左滑尾钮、右滑 VPN）
 
-    // 单颗滑动钮宽 70（系统列表口径）；右侧两颗共 140，
-    // 卸载被隐藏（多开共享态等）时只剩备份一颗 70。
+    // 两侧各一颗钮，单颗宽 70（系统列表口径）；尾钮无
+    // 形态（LC2 共享态）时左滑宽度为 0、左滑不出钮。
     private var leftSwipeWidth: CGFloat { 70 }
     private var rightSwipeWidth: CGFloat {
-        showsUninstall ? 140 : 70
+        trailingSwipeKind == .none ? 0 : 70
     }
 
     // 卡面是半透明的（动态取色 50% 透明），按钮光躲在卡片
-    // 后面会被透出来（3.8.2 实测教训）：静止时必须真隐藏，
-    // 只有横滑开始/打开着才显示。
+    // 后面会被透出来（3.8.2 实测教训）：静止时必须真隐藏。
+    // 显示时不整排点亮——每颗钮的可见性由 layoutSwipe
+    // Buttons 按当前偏移方向单独决定：左滑只出左滑的钮，
+    // 右滑的钮保持隐藏（用户实测：左滑时右滑图标也冒头）。
     private func setSwipeButtonsVisible(_ visible: Bool) {
-        vpnSwipeButton.isHidden = !visible
-        backupSwipeButton.isHidden = !visible
-        uninstallSwipeButton.isHidden = !visible || !showsUninstall
         if visible {
             layoutSwipeButtons()
+        } else {
+            vpnSwipeButton.isHidden = true
+            trailingSwipeButton.isHidden = true
         }
     }
 
-    // 三颗钮的帧 = 各自的露出区：钮内部的圆药丸随露出
+    // 两颗钮的帧 = 各自的露出区：钮内部的圆药丸随露出
     // 变宽「拉长成椭圆」，和节点行原生横滑的动效一致
-    // （用户拿录屏定的）：单钮侧药丸随拖动一路长；右侧
-    // 两颗先等分露出区一起长，拖过总宽后只有最外侧的
-    // 卸载继续拉长（全滑信号）。按钮设计（颜色/图标/
-    // 下方文字）不动，变的只有药丸宽。
+    // （用户拿录屏定的）：药丸随拖动一路长，拖过钮宽后
+    // 继续拉长（全滑信号）。按钮设计（颜色/图标/下方
+    // 文字）不动，变的只有药丸宽。排帧只读 swipeOffset，
+    // 归位补间逐帧改这个值，帧就逐帧跟着走。
     private func layoutSwipeButtons() {
         let bounds = swipeContainerView.bounds
         let height = bounds.height
@@ -707,20 +756,12 @@ final class LCAppBannerViewController: UIViewController, UIContextMenuInteractio
             vpnSwipeButton.frame = CGRect(x: 0, y: 0, width: offset, height: height)
         } else if offset < 0 {
             let reveal = -offset
-            if showsUninstall {
-                if reveal <= rightSwipeWidth {
-                    let each = reveal / 2
-                    backupSwipeButton.frame = CGRect(x: width - reveal, y: 0, width: each, height: height)
-                    uninstallSwipeButton.frame = CGRect(x: width - each, y: 0, width: each, height: height)
-                } else {
-                    backupSwipeButton.frame = CGRect(x: width - reveal, y: 0, width: leftSwipeWidth, height: height)
-                    let uninstallWidth = reveal - leftSwipeWidth
-                    uninstallSwipeButton.frame = CGRect(x: width - uninstallWidth, y: 0, width: uninstallWidth, height: height)
-                }
-            } else {
-                backupSwipeButton.frame = CGRect(x: width - reveal, y: 0, width: reveal, height: height)
-            }
+            trailingSwipeButton.frame = CGRect(x: width - reveal, y: 0, width: reveal, height: height)
         }
+        // 可见性跟方向走：只有正在露出的那一侧钮可见，
+        // 另一侧哪怕帧还留着旧值也保持隐藏、不会透出。
+        vpnSwipeButton.isHidden = offset <= 0
+        trailingSwipeButton.isHidden = offset >= 0 || trailingSwipeKind == .none
     }
 
     private func setSwipeOffset(_ offset: CGFloat, animated: Bool) {
@@ -733,24 +774,51 @@ final class LCAppBannerViewController: UIViewController, UIContextMenuInteractio
         } else if Self.czfOpenSwipeBanner === self {
             Self.czfOpenSwipeBanner = nil
         }
-        swipeOffset = offset
         swipeCloseTapGesture?.isEnabled = offset != 0
         if offset != 0 {
             setSwipeButtonsVisible(true)
         }
-        let apply = {
-            self.bannerView.transform = CGAffineTransform(translationX: offset, y: 0)
-            self.layoutSwipeButtons()
-        }
         if animated {
-            UIView.animate(withDuration: 0.25, delay: 0, options: [.curveEaseOut], animations: apply) { _ in
-                if self.swipeOffset == 0 {
-                    self.setSwipeButtonsVisible(false)
-                }
-            }
+            startSwipeTween(to: offset)
         } else {
-            apply()
+            stopSwipeTween()
+            swipeOffset = offset
+            bannerView.transform = CGAffineTransform(translationX: offset, y: 0)
+            layoutSwipeButtons()
             if offset == 0 {
+                setSwipeButtonsVisible(false)
+            }
+        }
+    }
+
+    // 归位/打开的逐帧补间：easeOut 三次方、0.25 秒，和
+    // 原 UIView 动画观感一致，但偏移是逐帧写回的，按钮
+    // 帧跟着卡片同步收放，不再僵住后突然消失。
+    private func startSwipeTween(to target: CGFloat) {
+        stopSwipeTween()
+        swipeTweenFrom = swipeOffset
+        swipeTweenTo = target
+        swipeTweenStart = CACurrentMediaTime()
+        let link = CADisplayLink(target: self, selector: #selector(swipeTweenTick(_:)))
+        link.add(to: .main, forMode: .common)
+        swipeDisplayLink = link
+    }
+
+    private func stopSwipeTween() {
+        swipeDisplayLink?.invalidate()
+        swipeDisplayLink = nil
+    }
+
+    @objc private func swipeTweenTick(_ link: CADisplayLink) {
+        let t = min((CACurrentMediaTime() - swipeTweenStart) / 0.25, 1)
+        let eased = 1 - pow(1 - t, 3)
+        let value = swipeTweenFrom + (swipeTweenTo - swipeTweenFrom) * CGFloat(eased)
+        swipeOffset = value
+        bannerView.transform = CGAffineTransform(translationX: value, y: 0)
+        layoutSwipeButtons()
+        if t >= 1 {
+            stopSwipeTween()
+            if swipeTweenTo == 0 {
                 setSwipeButtonsVisible(false)
             }
         }
@@ -763,6 +831,8 @@ final class LCAppBannerViewController: UIViewController, UIContextMenuInteractio
             if Self.czfOpenSwipeBanner !== self {
                 Self.czfOpenSwipeBanner?.setSwipeOffset(0, animated: true)
             }
+            // 拖动接管偏移：停掉可能在跑的归位补间
+            stopSwipeTween()
             swipeStartOffset = swipeOffset
             setSwipeButtonsVisible(true)
             layoutSwipeButtons()
@@ -779,15 +849,14 @@ final class LCAppBannerViewController: UIViewController, UIContextMenuInteractio
             let total = swipeStartOffset + gesture.translation(in: swipeContainerView).x
             let velocity = gesture.velocity(in: swipeContainerView).x
             let rowWidth = max(swipeContainerView.bounds.width, 1)
-            // 滑到底（过半行）：左滑到底 = 最右边那颗卸载，
-            // 右滑到底 = VPN 开/关——与点按那颗钮同一动作，
-            // 先归位再执行（卸载自带确认、VPN 是开关）。
+            // 滑到底（过半行）：左滑到底 = 尾钮（卸载/取消
+            // 分享），右滑到底 = VPN 开/关——与点按那颗钮
+            // 同一动作，先归位再执行（卸载自带确认、VPN
+            // 是开关）。尾钮无形态时左滑到底只归位。
             if total <= -rowWidth * 0.5 {
                 setSwipeOffset(0, animated: true)
-                if showsUninstall {
-                    uninstallSwipeTapped()
-                } else {
-                    backupSwipeTapped()
+                if trailingSwipeKind != .none {
+                    trailingSwipeTapped()
                 }
                 return
             }
@@ -821,14 +890,95 @@ final class LCAppBannerViewController: UIViewController, UIContextMenuInteractio
         refreshView()
     }
 
-    @objc private func uninstallSwipeTapped() {
-        setSwipeOffset(0, animated: true)
-        Task { [weak self] in await self?.uninstall() }
+    @objc private func trailingSwipeTapped() {
+        switch trailingSwipeKind {
+        case .uninstall:
+            setSwipeOffset(0, animated: true)
+            Task { [weak self] in await self?.uninstall() }
+        case .unshare:
+            setSwipeOffset(0, animated: true)
+            Task { [weak self] in await self?.unshareApp() }
+        case .none:
+            break
+        }
     }
 
-    @objc private func backupSwipeTapped() {
-        setSwipeOffset(0, animated: true)
-        backupApp()
+    // 容器级点按识别器的落点分发：命中哪颗露出来的钮，
+    // 就走哪颗的动作（与全滑、控件点按同一入口）。
+    @objc private func swipeButtonAreaTapped(_ gesture: UITapGestureRecognizer) {
+        let point = gesture.location(in: swipeContainerView)
+        if !vpnSwipeButton.isHidden, vpnSwipeButton.frame.contains(point) {
+            vpnSwipeTapped()
+        } else if !trailingSwipeButton.isHidden, trailingSwipeButton.frame.contains(point) {
+            trailingSwipeTapped()
+        }
+    }
+
+    // 取消分享：与设置页 movePrivateDoc 同一套动作（确认
+    // 文案用同一组本地化串）——被其他 LC 占用先报错；确认
+    // 后把 App 本体、各数据容器、模块文件夹从共享目录搬
+    // 回私有目录，名单与共享标记同步翻转。
+    private func unshareApp() async {
+        let model = configuration.model
+        let appInfo = model.appInfo
+        let sharedModel = DataManager.shared.model
+        for container in appInfo.containers {
+            if let runningLC = LCSharedUtils.getContainerUsingLCScheme(withFolderName: container.folderName) {
+                showError("lc.appSettings.appOpenInOtherLc %@ %@".localizeWithFormat(runningLC, runningLC))
+                return
+            }
+        }
+        let confirmed = await presentConfirmation(
+            title: "lc.appSettings.toPrivateApp".loc,
+            message: "lc.appSettings.toPrivateAppDesc".loc,
+            confirmTitle: "lc.common.move".loc,
+            cancelTitle: "lc.common.cancel".loc
+        )
+        guard confirmed == true else { return }
+        do {
+            var moves: [(URL, URL)] = []
+            moves.append((
+                URL(fileURLWithPath: appInfo.bundlePath()),
+                LCPath.bundlePath.appendingPathComponent(appInfo.relativeBundlePath)
+            ))
+            for container in model.uiContainers {
+                if container.storageBookMark != nil { continue }
+                moves.append((
+                    LCPath.lcGroupDataPath.appendingPathComponent(container.folderName),
+                    LCPath.dataPath.appendingPathComponent(container.folderName)
+                ))
+            }
+            if let tweakFolder = appInfo.tweakFolder, tweakFolder.count > 0 {
+                for name in LCAppModel.czfSplitTweakFolders(tweakFolder) {
+                    for candidate in [name, name + ".disabled"] {
+                        let src = LCPath.lcGroupTweakPath.appendingPathComponent(candidate)
+                        if FileManager.default.fileExists(atPath: src.path) {
+                            moves.append((src, LCPath.tweakPath.appendingPathComponent(candidate)))
+                        }
+                    }
+                }
+            }
+            try LCUtils.moveFilesAtomicallyAfterPreflight(moves)
+            for container in model.uiContainers {
+                if container.storageBookMark != nil { continue }
+                sharedModel.appDataFolderNames.append(container.folderName)
+            }
+            if let tweakFolder = appInfo.tweakFolder, tweakFolder.count > 0 {
+                for name in LCAppModel.czfSplitTweakFolders(tweakFolder) where !sharedModel.tweakFolderNames.contains(name) {
+                    sharedModel.tweakFolderNames.append(name)
+                }
+                model.uiTweakFolder = tweakFolder
+            }
+            appInfo.setBundlePath(LCPath.bundlePath.appendingPathComponent(appInfo.relativeBundlePath).path)
+            appInfo.isShared = false
+            model.uiIsShared = false
+            for container in model.uiContainers {
+                container.isShared = false
+            }
+            refreshView()
+        } catch {
+            showError(error.localizedDescription)
+        }
     }
 
     // 与数据管理里的手动备份同一套、同一位置（Documents/
@@ -874,6 +1024,19 @@ final class LCAppBannerViewController: UIViewController, UIContextMenuInteractio
         if let pan = gestureRecognizer as? UIPanGestureRecognizer {
             let velocity = pan.velocity(in: bannerView)
             return abs(velocity.x) > abs(velocity.y) * 1.2
+        }
+        return true
+    }
+
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+        // 按钮区点按识别器只在行滑开着、且落点确实在露出
+        // 的按钮帧内时才接管这次触摸，其余一律放行。
+        if gestureRecognizer === swipeButtonTapGesture {
+            guard swipeOffset != 0 else { return false }
+            let point = touch.location(in: swipeContainerView)
+            if !vpnSwipeButton.isHidden, vpnSwipeButton.frame.contains(point) { return true }
+            if !trailingSwipeButton.isHidden, trailingSwipeButton.frame.contains(point) { return true }
+            return false
         }
         return true
     }
@@ -1093,16 +1256,30 @@ final class LCBannerSwipeButton: UIControl {
         super.layoutSubviews()
         // 药丸左右各留 11：帧宽 70（停住位）时药丸 48 =
         // 正圆，与原样式严丝合缝；帧更宽就拉长成椭圆。
+        // 药丸+文字整组按钮高（=卡片高）上下居中（用户：
+        // 图标没和卡片上下居中）——原来药丸贴顶 y=2，整组
+        // 偏上；现在先算整组高再取居中起点，图标自然落在
+        // 卡片的垂直中线上。
         let pillWidth = max(bounds.width - 22, 0)
-        pillView.frame = CGRect(x: 11, y: 2, width: pillWidth, height: 48)
+        let groupHeight: CGFloat = 48 + 3 + 14
+        let top = max((bounds.height - groupHeight) / 2, 0)
+        pillView.frame = CGRect(x: 11, y: top, width: pillWidth, height: 48)
         pillView.layer.cornerRadius = min(24, pillWidth / 2)
         iconView.frame = pillView.bounds
         iconView.alpha = min(max((pillWidth - 16) / 16, 0), 1)
-        titleLabel.frame = CGRect(x: 0, y: 53, width: bounds.width, height: 14)
+        titleLabel.frame = CGRect(x: 0, y: top + 48 + 3, width: bounds.width, height: 14)
         titleLabel.alpha = min(max((pillWidth - 28) / 18, 0), 1)
     }
 
     func setColor(_ color: UIColor) {
+        pillView.backgroundColor = color
+    }
+
+    // 整颗换装（尾钮在卸载/取消分享之间切换时用）：图标、
+    // 下方文字、药丸色一起换，布局尺寸不动。
+    func configure(symbol: String, title: String, color: UIColor) {
+        iconView.image = UIImage(systemName: symbol, withConfiguration: UIImage.SymbolConfiguration(pointSize: 19, weight: .semibold))
+        titleLabel.text = title
         pillView.backgroundColor = color
     }
 

@@ -74,15 +74,19 @@ struct LCVPNView: View {
     @State var vpnPingPhase = "测速"
     @State var vpnPrewarmSuppressed = false
     @State private var showVPNHelp = false
+    // 有没有“默认顺序”存档（第一次延迟排序时存下）：决定
+    // 默认排序按钮与批量行要不要出现。
+    @State var hasDefaultOrderSnapshot = false
 
-    /// 测完后有没有批量操作可做（切到最快/清理不通/按延迟排序
-    /// 任一出现）：批量操作行只在此时才出现，平时不占一行。
+    /// 测完后有没有批量操作可做（切到最快/清理不通/延迟排序/
+    /// 默认排序任一出现）：批量操作行只在此时才出现，平时不占一行。
     /// 清理只认网络失败——转换失败（不支持）的不算，避免只剩
     /// 不支持节点时出现一行空按钮。
     private var hasVPNBatchActions: Bool {
         vpnPingResults.contains(where: { $0.value.success && $0.key != vpnActiveIndex })
             || vpnPingResults.contains(where: { !$0.value.success && !$0.value.conversionFailed && $0.key != vpnActiveIndex })
             || vpnPingResults.count > 1
+            || hasDefaultOrderSnapshot
     }
 
     var body: some View {
@@ -254,6 +258,15 @@ struct LCVPNView: View {
             }
             .listRowSeparator(.hidden)
             HStack {
+                // 测延迟与启动/停止核心已对调位置（用户定）：
+                // 测延迟在前，核心开关在后。
+                Button(vpnPinging ? (vpnPingTotal > 0 ? "\(vpnPingPhase) \(vpnPingDone)/\(vpnPingTotal)" : "测速中…") : "测延迟") {
+                    startVPNPing()
+                }
+                .disabled(vpnPinging || vpnSinglePinging || vpnNodes.isEmpty)
+                .buttonStyle(.bordered)
+                .buttonBorderShape(.capsule)
+                .controlSize(.small)
                 Button(vpnCoreRunning ? "停止核心" : "启动核心") {
                     CZFVPNManager.shared.noteManualCoreToggle(started: !vpnCoreRunning)
                     if vpnCoreRunning {
@@ -272,16 +285,10 @@ struct LCVPNView: View {
                 .buttonBorderShape(.capsule)
                 .controlSize(.small)
                 .tint(vpnCoreRunning ? .red : .blue)
-                Button(vpnPinging ? (vpnPingTotal > 0 ? "\(vpnPingPhase) \(vpnPingDone)/\(vpnPingTotal)" : "测速中…") : "测延迟") {
-                    startVPNPing()
-                }
-                .disabled(vpnPinging || vpnSinglePinging || vpnNodes.isEmpty)
-                .buttonStyle(.bordered)
-                .buttonBorderShape(.capsule)
-                .controlSize(.small)
                 Spacer()
             }
             .onAppear {
+                hasDefaultOrderSnapshot = !Self.loadDefaultOrderMap().isEmpty
                 refreshVPNState()
             }
             // 测完后的批量操作单独放一行：原来启动/测延迟/
@@ -331,8 +338,19 @@ struct LCVPNView: View {
                 // 跨组搬家会打乱订阅归属；在用节点按内容
                 // 跟随、不重启核心。
                 if vpnPingResults.count > 1 {
-                    Button("按延迟排序") {
+                    Button("延迟排序") {
+                        snapshotDefaultOrderIfNeeded()
                         sortGroupsByPing()
+                    }
+                    .disabled(vpnPinging || vpnSinglePinging)
+                    .buttonStyle(.borderless)
+                }
+                // 默认排序（与延迟排序成对，用户定）：恢复成
+                // 延迟排序之前的组内顺序；之后新加的节点按
+                // 当前相对顺序接在后面，不删不丢。
+                if hasDefaultOrderSnapshot {
+                    Button("默认排序") {
+                        restoreDefaultOrder()
                     }
                     .disabled(vpnPinging || vpnSinglePinging)
                     .buttonStyle(.borderless)
@@ -537,9 +555,15 @@ struct LCVPNView: View {
         // 组）：右滑测试（=只测本组延迟）/更新，左滑二维
         // 码/删除，与节点行的滑动同一套。
         HStack(spacing: 8) {
-            Image(systemName: group.collapsed ? "chevron.right" : "chevron.down")
+            // 三角不换图（与源卡片头同一个坑、同一个修法）：
+            // chevron.right/down 本宽不同，换图瞬间组名整列
+            // 被顶得左右移；固定一颗右箭头在定宽框里原地
+            // 旋转 90°，展开收起布局纹丝不动。
+            Image(systemName: "chevron.right")
                 .font(.system(size: 17, weight: .semibold))
                 .foregroundStyle(.blue)
+                .frame(width: 22, height: 22)
+                .rotationEffect(.degrees(group.collapsed ? 0 : 90))
             VStack(alignment: .leading, spacing: 2) {
                 Text(group.name)
                     .font(.system(size: 16, weight: .semibold))
@@ -947,6 +971,45 @@ struct LCVPNView: View {
             pop.permittedArrowDirections = []
         }
         top.present(vc, animated: true)
+    }
+
+    // 默认顺序存档：组 id → 延迟排序之前的组内链接顺序，
+    // 存 UserDefaults（JSON）。第一次延迟排序时按组存下，
+    // 之后不再覆盖，保证默认排序回到的永远是最初顺序。
+    private static let defaultOrderKey = "CZFVPNDefaultGroupOrder"
+
+    static func loadDefaultOrderMap() -> [String: [String]] {
+        guard let data = UserDefaults.standard.data(forKey: defaultOrderKey),
+              let map = try? JSONDecoder().decode([String: [String]].self, from: data) else { return [:] }
+        return map
+    }
+
+    func snapshotDefaultOrderIfNeeded() {
+        var map = Self.loadDefaultOrderMap()
+        var changed = false
+        for group in vpnGroups where map[group.id] == nil {
+            map[group.id] = group.links
+            changed = true
+        }
+        if changed, let data = try? JSONEncoder().encode(map) {
+            UserDefaults.standard.set(data, forKey: Self.defaultOrderKey)
+            hasDefaultOrderSnapshot = true
+        }
+    }
+
+    /// 默认排序：各组恢复存档顺序；存档里没有的（后来新加
+    /// 的）按当前相对顺序接在后面，存档里已删掉的自动跳过。
+    func restoreDefaultOrder() {
+        let map = Self.loadDefaultOrderMap()
+        guard !map.isEmpty else { return }
+        var groups = vpnGroups
+        for gi in groups.indices {
+            guard let saved = map[groups[gi].id] else { continue }
+            let current = groups[gi].links
+            groups[gi].links = saved.filter { current.contains($0) } + current.filter { !saved.contains($0) }
+        }
+        CZFVPNManager.shared.saveGroupOrder(groups)
+        refreshVPNState()
     }
 
     /// 按延迟排序（分组版）：各组内部按同一把尺子排（通的

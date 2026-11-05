@@ -405,6 +405,18 @@ struct LCSettingsView: View {
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "未知"
     }
 
+    // 页脚显示：只留版本号 + 构建尾号（短提交号），不带
+    // 「当前版本」字样（用户定）；尾号取不到（构建没写
+    // LCVersionInfo）就只显示版本号。
+    private var footerVersionText: String {
+        if let commit = CZFUpdateCheck.currentCommit() {
+            // 版本号与尾号贴紧（用户定：不要离太远），中间
+            // 只一个间隔点、不带空格。
+            return "\(currentAppVersion)·\(commit)"
+        }
+        return currentAppVersion
+    }
+
     // App 内更新检查（CZF）：查自家仓库的 update release，对比
     // 本机 LCVersionInfo 里的短提交号；有新版不自己下载安装
     // （侧载 App 换不了自己的包），跳 SideInstaller 🅥 / Seal
@@ -540,14 +552,12 @@ struct LCSettingsView: View {
 
     @ViewBuilder private var versionFooter: some View {
         VStack(spacing: 4) {
-            // 底部落款（用户定版）：「当前版本 X」从更新卡的
-            // 左对齐页脚挪到这里，压在「丶沐雨丿修改版」上方、
-            // 同样居中；分支/提交号那一长串仍不显示。连点 5
-            // 下开开发者模式的手势保留在修改版文字上，别删。
-            Text("当前版本 \(currentAppVersion)")
-                .foregroundStyle(.gray)
-                .frame(maxWidth: .infinity, alignment: .center)
-            Text("丶沐雨丿修改版")
+            // 底部落款只剩一行（用户定）：「版本号 · 构建
+            // 尾号」居中（删掉「当前版本」字样、保留版本号、
+            // 加上构建尾号），「修改版」字样已删。连点 5 下
+            // 开开发者模式的手势随之挪到这行上——手势本身
+            // 别删，删了开发者模式就再无入口。
+            Text(footerVersionText)
                 .foregroundStyle(.gray)
                 .frame(maxWidth: .infinity, alignment: .center)
                 .onTapGesture(count: 5) {

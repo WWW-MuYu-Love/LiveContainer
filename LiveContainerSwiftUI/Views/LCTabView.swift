@@ -81,6 +81,11 @@ struct LCTabView: View {
             if newTab != .search {
                 globalSearch.lastContentTab = newTab
             }
+            // 进了系统搜索标签就把全局搜索打开（底部搜索
+            // 条与各页过滤都读这个开关）。
+            if newTab == .search {
+                globalSearch.isActive = true
+            }
             // 换页重新搜：关键词不带去新页面，占位与过滤
             // 都按新页面走；搜索框保持开着。
             if globalSearch.isActive {
@@ -186,12 +191,13 @@ struct LCTabView: View {
     }
     
     // 根标签栏：iOS 26+ 用系统新标签栏（Tab 新 API），以下
-    // 用旧标签栏；搜索两条路统一为浮动圆形键 + 底部胶囊框
-    // （用户看视频定版的样式：停留在当前页、框浮在键盘上
-    // 方）。原 iOS 26 的系统搜索标签会切去镜像页，用户不要，
-    // 已去掉。VPN 标签两条路都不再有（入口在设置页「代理
-    // 设置」），LCTabIdentifier.vpn 枚举留着不动，免得旧的
-    // 选中标签值对不上号。
+    // 用旧标签栏。搜索：iOS 26 用系统搜索标签（role:
+    // .search 的独立玻璃圆钮，用户照图定版要原厂这个；
+    // 内容是当前页镜像 + 底部胶囊框，关搜索切回原页）；
+    // 旧系统不放搜索钮（用户定：取消掉），只剩系统全宽
+    // 标签栏。VPN 标签两条路都不再有（入口在设置页「代
+    // 理设置」），LCTabIdentifier.vpn 枚举留着不动，免
+    // 得旧的选中标签值对不上号。
     @ViewBuilder private var rootTabs: some View {
         if #available(iOS 26.0, *) {
             TabView(selection: $sharedModel.selectedTab) {
@@ -212,33 +218,29 @@ struct LCTabView: View {
                 Tab("lc.tabView.settings".loc, systemImage: "gearshape.fill", value: LCTabIdentifier.settings) {
                     LCSettingsView()
                 }
-            }
-            .overlay(alignment: .bottomTrailing) {
-                globalSearchButton
-            }
-            .overlay {
-                // 搜索开着时，点页面其他任何地方：键盘与
-                // 搜索栏一起收起（用户定）。透明层只接点
-                // 按，滚动拖动照常穿透到底下页面；底部让
-                // 出搜索栏 + 标签栏的高度，那片不归它管
-                // （取消钮、输入框、标签照常可点）。
-                if globalSearch.isActive {
-                    Color.clear
-                        .contentShape(Rectangle())
-                        .padding(.bottom, 140)
-                        .simultaneousGesture(
-                            TapGesture().onEnded {
-                                closeGlobalSearch()
-                            }
-                        )
+                // 系统搜索标签（iOS 26 的 role: .search）：不进
+                // 胶囊、单独一颗玻璃圆钮摆在标签栏旁边（用户照
+                // 图定的原厂样式），胶囊因此只剩四个标签、自
+                // 然缩进。内容是上一个内容页的镜像 + 系统
+                // 搜索框，点开即搜当前页；取消后切回原页。
+                Tab("搜索", systemImage: "magnifyingglass", value: LCTabIdentifier.search, role: .search) {
+                    searchTabContent
+                        // 镜像页自带搜索栏要关掉（环境开关是老
+                        // 搜索标签时代留的现成管线）：只留标签
+                        // 这一个系统搜索框，词经全局中心同步进
+                        // 镜像页的本地过滤，不会出现两个搜索框。
+                        .environment(\.czfInSearchTab, true)
+                        // 搜索框用系统原厂 .searchable（用户定）：
+                        // 字段与取消都由系统出，文本/呈现仍绑到
+                        // 全局搜索中心，各页过滤逻辑不变。
+                        .searchable(text: searchTextBinding, isPresented: searchPresentedBinding, prompt: Text(globalSearchPlaceholder))
                 }
             }
-            .safeAreaInset(edge: .bottom, spacing: 0) {
-                globalSearchBar
-            }
+
             .onChange(of: globalSearch.isActive) { active in
-                if active {
-                    searchFieldFocused = true
+                // 系统搜索框被取消收起时，顺手切回原内容页
+                if !active, sharedModel.selectedTab == .search {
+                    sharedModel.selectedTab = globalSearch.lastContentTab
                 }
             }
         } else {
@@ -271,9 +273,7 @@ struct LCTabView: View {
                     }
                     .tag(LCTabIdentifier.settings)
             }
-            .overlay(alignment: .bottomTrailing) {
-                globalSearchButton
-            }
+
             .overlay {
                 // 搜索开着时，点页面其他任何地方：键盘与
                 // 搜索栏一起收起（用户定）。透明层只接点
@@ -302,16 +302,6 @@ struct LCTabView: View {
         }
     }
 
-    // 圆形搜索键与标签栏的对齐：iOS 26 的标签栏是浮动胶
-    // 囊，搜索键与它同高并排——直径就取胶囊高（用户截图
-    // 实测约 63pt），底边与胶囊底边对齐即圆心对齐（此
-    // 前 52 直径 + 36 间距，键又小又骑在胶囊右上角）。
-    // 旧标签栏是全宽贴底，键浮在它上方（92 不变）。
-    private var searchButtonBottomPadding: CGFloat {
-        if #available(iOS 26.0, *) { return 3 }
-        return 92
-    }
-
     // iOS 26 液态玻璃背景：系统玻璃（可交互版给按钮用，
     // 按压有玻璃回弹），旧系统退回超薄材质 + 同款阴影与
     // 描边。玻璃自带高光边缘，26 上不再叠手动阴影。
@@ -338,24 +328,6 @@ struct LCTabView: View {
                         shape.strokeBorder(Color.primary.opacity(0.06), lineWidth: 1)
                     }
             }
-        }
-    }
-
-    // 底部圆形搜索键：浮在标签栏右侧，不挡任何标签的点击。
-    @ViewBuilder private var globalSearchButton: some View {
-        if !globalSearch.isActive {
-            Button {
-                globalSearch.isActive = true
-            } label: {
-                Image(systemName: "magnifyingglass")
-                    .font(.system(size: 23, weight: .semibold))
-                    .foregroundStyle(.primary)
-                    .frame(width: 63, height: 63)
-                    .modifier(CZFGlassBackground(shape: Circle(), interactive: true))
-            }
-            .buttonStyle(.plain)
-            .padding(.trailing, 16)
-            .padding(.bottom, searchButtonBottomPadding)
         }
     }
 
@@ -411,6 +383,36 @@ struct LCTabView: View {
         globalSearch.query = ""
         globalSearch.isActive = false
         searchFieldFocused = false
+        // 在系统搜索标签里关搜索 = 切回刚才的内容页
+        if sharedModel.selectedTab == .search {
+            sharedModel.selectedTab = globalSearch.lastContentTab
+        }
+    }
+
+    // 系统原厂搜索框的绑定：文本与呈现状态都走全局搜索
+    // 中心，各页的过滤读的还是同一份 query/isActive。
+    private var searchTextBinding: Binding<String> {
+        Binding(get: { globalSearch.query }, set: { globalSearch.query = $0 })
+    }
+
+    private var searchPresentedBinding: Binding<Bool> {
+        Binding(get: { globalSearch.isActive }, set: { globalSearch.isActive = $0 })
+    }
+
+    // 系统搜索标签的内容：上一个内容页的镜像（同一页的
+    // 新实例，滚动位置不共享，这是系统搜索标签的老代价）；
+    // 镜像页同样读全局搜索词过滤。
+    @ViewBuilder private var searchTabContent: some View {
+        switch globalSearch.lastContentTab {
+        case .sources:
+            LCSourcesView()
+        case .apps, .search:
+            LCAppListView()
+        case .tweaks:
+            LCTweaksView()
+        case .settings, .vpn:
+            LCSettingsView()
+        }
     }
 
     func dispatchURL(url: URL) {
