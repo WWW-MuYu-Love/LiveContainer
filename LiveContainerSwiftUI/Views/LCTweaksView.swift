@@ -31,11 +31,13 @@ struct LCTweakFolderView : View {
     @EnvironmentObject private var sharedModel: SharedModel
     @ObservedObject private var globalSearch = CZFSearchCenter.shared
 
-    // 全局搜索过滤（按文件名）：搜索没开或词为空时就是
-    // 全量；删除按显示列表换算（见 deleteTweakItem）。
+    // 全局搜索过滤（按文件名）：词为空时就是全量；删除
+    // 按显示列表换算（见 deleteTweakItem）。过滤只看词、
+    // 不看全局开关——开关在系统搜索会话里会闪烁，拿它
+    // 当门出现过打了字不过滤（3.8.8 录屏实测）。
     private var displayedTweakItems: [LCTweakItem] {
         let q = globalSearch.query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard globalSearch.isActive, !q.isEmpty else { return tweakItems }
+        guard !q.isEmpty else { return tweakItems }
         return tweakItems.filter { $0.displayName.localizedCaseInsensitiveContains(q) }
     }
     
@@ -476,7 +478,7 @@ struct LCTweakFolderView : View {
             defer {
                 isTweakSigning = false
             }
-            
+
             try await LCUtils.signTweaks(tweakFolderUrl: self.baseUrl, force: true) { p in
                 isTweakSigning = true
             }
@@ -487,7 +489,7 @@ struct LCTweakFolderView : View {
             return
         }
     }
-    
+
     func createNewFolder() async {
         guard let newName = await renameFileInput.open(), newName != "" else {
             return

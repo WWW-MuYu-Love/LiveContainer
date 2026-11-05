@@ -255,26 +255,31 @@ struct LCTabView: View {
                         // 沿革：3.8.6 时呈现绑全局中心，开关残留
                         // true 时进标签没有跳变、键盘时弹时不弹；
                         // 3.8.7 索性不绑呈现、指望系统自动聚焦，
-                        // 结果在这种镜像页结构下键盘根本不弹
-                        // （用户实测源/App 两页都搜不了）。现在
-                        // 呈现开关独立持有且进出必翻转，每次点
-                        // 搜索按钮都默认弹键盘。
+                        // 结果在这种镜像页结构下键盘根本不弹。
+                        // 现在呈现开关独立持有且进出必翻转，每次
+                        // 点搜索按钮都默认弹键盘（3.8.8 录屏确认
+                        // 键盘已稳定弹出）；3.8.8 的其余毛病——打
+                        // 字不过滤、取消留水滴、呈现闪烁——出在各
+                        // 页拿全局开关当过滤门、以及收起途中程序
+                        // 化切标签，已分别去掉（见各页同步与本文件
+                        // rootTabs 尾部注释），呈现这条保持不动。
                         .searchable(text: searchTextBinding, isPresented: $searchPresented, prompt: Text(globalSearchPlaceholder))
                 }
             }
 
-            .onChange(of: globalSearch.isActive) { active in
-                // 系统搜索框被取消收起时，顺手切回原内容页
-                if !active, sharedModel.selectedTab == .search {
-                    sharedModel.selectedTab = globalSearch.lastContentTab
-                }
-            }
+            // 注意：这里故意不再监听「搜索被取消」去程序化
+            // 切标签。3.8.8 录屏实测：在系统收起搜索的形态
+            // 动画途中改选中标签，玻璃形态会被打断、留下一
+            // 颗小水滴残影，呈现还会来回闪烁；取消后人停在
+            // 搜索标签（内容就是当前页的镜像）即可，要回内
+            // 容页由用户自己点标签。
             .onChange(of: searchPresented) { presented in
-                // 系统取消搜索（呈现被系统关掉）而选中还停在
-                // 搜索标签时，切回原内容页，免得停在没键盘
-                // 的空搜索页。
-                if !presented, sharedModel.selectedTab == .search {
-                    sharedModel.selectedTab = globalSearch.lastContentTab
+                // 呈现关掉时（系统取消、或切走标签）只清词、
+                // 不切标签：各页现在只认词过滤，词不清就会
+                // 拿着上一次的词继续过滤，对不上眼前的界面；
+                // 清词不碰选中标签，不打断收起动画。
+                if !presented {
+                    globalSearch.query = ""
                 }
             }
         } else {

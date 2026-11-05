@@ -62,11 +62,12 @@ struct LCSettingsView: View {
 
     @ObservedObject private var globalSearch = CZFSearchCenter.shared
 
-    // 全局搜索（底部搜索框）过滤设置主页：词命中某段的
-    // 关键词才显示那段；搜索没开或词为空时全显示。
+    // 全局搜索过滤设置主页：词命中某段的关键词才显示
+    // 那段；词为空时全显示。只看词、不看全局开关（同模
+    // 块页注释：开关会闪烁，不能当过滤的门）。
     private func czfSettingsSearchVisible(_ keywords: String) -> Bool {
         let q = globalSearch.query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard globalSearch.isActive, !q.isEmpty else { return true }
+        guard !q.isEmpty else { return true }
         return keywords.localizedCaseInsensitiveContains(q)
     }
 

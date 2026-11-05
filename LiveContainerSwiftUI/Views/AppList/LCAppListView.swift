@@ -696,18 +696,14 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
         }
         .czfSearchable(text: $searchContext.query, placement: .automatic, disabled: czfOwnSearchDisabled)
         .onChange(of: globalSearch.query) { newValue in
-            // 全局搜索（底部搜索框）驱动本页：开着时把词
-            // 同步进本页的 searchContext，走现成过滤/防抖，
-            // 不另造一套；本页自己的搜索栏不受影响。
-            if globalSearch.isActive {
-                searchContext.query = newValue
-            }
-        }
-        .onChange(of: globalSearch.isActive) { active in
-            // 取消全局搜索时把同步进来的词清掉，列表恢复全量
-            if !active {
-                searchContext.query = ""
-            }
+            // 全局搜索的词无条件同步进本页 searchContext，
+            // 走现成过滤/防抖：全局词只由搜索框产生（进搜
+            // 索标签时先清空），它变了就是用户当前的搜意。
+            // 以前还要全局开关开着才同步、关了就清本地词——
+            // 系统搜索会话里开关一闪烁，词就被挡在门外或
+            // 被清掉，实测打了字列表不过滤（3.8.8 录屏）。
+            // 过滤与否只看词空不空，不再看开关。
+            searchContext.query = newValue
         }
 
     }
