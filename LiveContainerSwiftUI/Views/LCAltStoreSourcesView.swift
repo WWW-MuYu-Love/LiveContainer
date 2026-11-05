@@ -801,8 +801,10 @@ struct LCSourcesView: View {
 
         .onAppear {
             refreshUpdatableCache()
-            // 默认自动展开所有源
-            expandedSources = Set(viewModel.sources.map { $0.id })
+            // 源列表默认不展开（用户定）：进来只显示源卡片头，
+            // 要看哪个源的应用点开哪个；展开状态在本页存续
+            // 期间保留，不再每次出现就全展开。搜索时另有
+            // isFiltering 强制显示命中，不受这里影响。
             if !isViewAppeared {
                 guard sharedModel.selectedTab == .sources, let link = sharedModel.deepLink else { return }
                 sharedModel.deepLink = nil
@@ -813,8 +815,9 @@ struct LCSourcesView: View {
         .onChange(of: viewModel.sources) { newSources in
             refreshUpdatableCache()
             let newSet = Set(newSources.map { $0.id })
-            // 新加入的源自动展开，保留已有的展开状态
-            expandedSources = expandedSources.intersection(newSet).union(newSet)
+            // 只清掉已删除源的展开记录；新加入的源默认不展开
+            // （用户定），保留用户手动展开的状态。
+            expandedSources = expandedSources.intersection(newSet)
         }
         .onChange(of: sharedModel.apps) { _ in
             refreshUpdatableCache()

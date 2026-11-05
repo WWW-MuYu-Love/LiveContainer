@@ -567,13 +567,12 @@ struct LCSettingsView: View {
 
     @ViewBuilder private var versionFooter: some View {
         VStack(spacing: 4) {
-            // 底部落款两行（用户定）：上面「丶沐雨丿修改
-            // 版」、下面「版本号·构建尾号」，都居中。修改版
-            // 行曾按用户指示在 3.8.6 删过，他后来又要恢复
-            // （问版本号上面那行怎么没了）。连点 5 下开开发
-            // 者模式的手势挂在整个页脚上，两行点哪行都算
-            // ——手势本身别删，删了开发者模式就再无入口。
-            Text("丶沐雨丿修改版")
+            // 底部落款两行（用户定）：上面只写「丶沐雨丿」
+            // （他明确不要「修改版」三个字）、下面「版本号·
+            // 构建尾号」，都居中。连点 5 下开开发者模式的
+            // 手势挂在整个页脚上，两行点哪行都算——手势本
+            // 身别删，删了开发者模式就再无入口。
+            Text("丶沐雨丿")
                 .foregroundStyle(.gray)
                 .frame(maxWidth: .infinity, alignment: .center)
             Text(footerVersionText)

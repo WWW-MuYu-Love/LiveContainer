@@ -67,6 +67,11 @@ struct LCTabView: View {
     @StateObject var downloadHelper = DownloadHelper()
     @ObservedObject private var globalSearch = CZFSearchCenter.shared
     @FocusState private var searchFieldFocused: Bool
+    // iOS 26 搜索标签的呈现开关（本视图独立持有）：进搜索
+    // 标签时置 true（搜索框呈现并弹键盘，用户定：点搜索
+    // 按钮默认弹键盘），离开时置 false，保证每次进入都是
+    // 干净的 false→true 跳变。见搜索标签处注释。
+    @State private var searchPresented = false
     // 「源」标签的更新红点数字（源页算好写进来的）
     @AppStorage("CZFUpdatableAppCount") var updatableAppCount = 0
 
@@ -86,16 +91,19 @@ struct LCTabView: View {
             }
             if newTab == .search {
                 // 进搜索标签：打开全局搜索并清上一次的词
-                // （换页重新搜，关键词不带进新页面）。
+                // （换页重新搜，关键词不带进新页面）；同时
+                // 把呈现开关拨开，搜索框呈现并弹键盘。
                 globalSearch.isActive = true
                 globalSearch.query = ""
+                searchPresented = true
             } else if #available(iOS 26.0, *) {
-                // iOS 26：搜索的呈现完全归系统按选中标签管
-                // 理，全局开关严格镜像「在不在搜索标签」，
-                // 不再有第二套状态与系统打架（键盘时弹时
-                // 不弹的根源）。旧系统分支没有搜索标签，
-                // 胶囊搜索的开关语义不变，不走这里。
+                // iOS 26：离开搜索标签，全局开关与呈现开关
+                // 一起关。呈现开关不在搜索标签时恒为 false，
+                // 每次进入都是一次干净的 false→true 跳变，
+                // 键盘必弹。旧系统分支没有搜索标签，胶囊
+                // 搜索的开关语义不变，不走这里。
                 globalSearch.isActive = false
+                searchPresented = false
             } else if globalSearch.isActive {
                 // 旧系统：换页重新搜，搜索框保持开着。
                 globalSearch.query = ""
@@ -241,19 +249,31 @@ struct LCTabView: View {
                         .environment(\.czfInSearchTab, true)
                         // 搜索框用系统原厂 .searchable（用户定）：
                         // 字段与取消都由系统出，文本绑到全局搜
-                        // 索中心，各页过滤逻辑不变。呈现不再绑
-                        // isPresented：以前把呈现状态也接到全局
-                        // 中心手管，与系统自己的呈现状态两头打
-                        // 架，键盘时弹时不弹（用户录屏实测）；
-                        // 现在呈现完全归系统（点搜索标签即呈现
-                        // 并弹键盘），全局中心只管文本与开关镜像。
-                        .searchable(text: searchTextBinding, prompt: Text(globalSearchPlaceholder))
+                        // 索中心，各页过滤逻辑不变；呈现绑本视
+                        // 图的 searchPresented（进标签置 true、
+                        // 离开置 false，见 body 的选中变化处理）。
+                        // 沿革：3.8.6 时呈现绑全局中心，开关残留
+                        // true 时进标签没有跳变、键盘时弹时不弹；
+                        // 3.8.7 索性不绑呈现、指望系统自动聚焦，
+                        // 结果在这种镜像页结构下键盘根本不弹
+                        // （用户实测源/App 两页都搜不了）。现在
+                        // 呈现开关独立持有且进出必翻转，每次点
+                        // 搜索按钮都默认弹键盘。
+                        .searchable(text: searchTextBinding, isPresented: $searchPresented, prompt: Text(globalSearchPlaceholder))
                 }
             }
 
             .onChange(of: globalSearch.isActive) { active in
                 // 系统搜索框被取消收起时，顺手切回原内容页
                 if !active, sharedModel.selectedTab == .search {
+                    sharedModel.selectedTab = globalSearch.lastContentTab
+                }
+            }
+            .onChange(of: searchPresented) { presented in
+                // 系统取消搜索（呈现被系统关掉）而选中还停在
+                // 搜索标签时，切回原内容页，免得停在没键盘
+                // 的空搜索页。
+                if !presented, sharedModel.selectedTab == .search {
                     sharedModel.selectedTab = globalSearch.lastContentTab
                 }
             }
@@ -404,9 +424,9 @@ struct LCTabView: View {
     }
 
     // 系统原厂搜索框的文本绑定：只绑文本到全局搜索中心，
-    // 各页的过滤读的还是同一份 query/isActive。呈现不绑
-    // （见搜索标签处注释：呈现归系统管，绑了两头打架，
-    // 键盘时弹时不弹、关闭时玻璃形态动画还会窜出小水滴）。
+    // 各页的过滤读的还是同一份 query/isActive。呈现绑在
+    // 本视图的 searchPresented @State 上（见搜索标签处
+    // 注释的沿革），不走这个绑定。
     private var searchTextBinding: Binding<String> {
         Binding(get: { globalSearch.query }, set: { globalSearch.query = $0 })
     }
