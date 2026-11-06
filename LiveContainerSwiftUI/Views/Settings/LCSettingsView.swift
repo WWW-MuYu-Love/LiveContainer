@@ -136,8 +136,12 @@ struct LCSettingsView: View {
                 versionFooter
                 if czfSettingsSearchVisible("开发者 注入 调试 developer 模式") { developerSection }
             }
+            // 搜索栏与框架和源页同款（Campbell 定）：段间距
+            // 同为 10、搜索栏导航栏下方常显；底色同为分组
+            // 灰（Form 默认），不另改。
+            .czfListSectionSpacing(10)
             .navigationBarTitle("lc.tabView.settings".loc)
-            .searchable(text: $searchText, placement: .automatic, prompt: "搜索设置")
+            .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .always), prompt: "搜索设置")
             .alert("lc.common.error".loc, isPresented: $errorShow){
             } message: {
                 Text(errorInfo)

@@ -126,8 +126,12 @@ struct LCEdgeGestureSettingView: View {
             }
             }
         }
+        // 搜索栏与框架和源页同款（Campbell 定）：段间距
+        // 10、搜索栏导航栏下方常显（本页原先没写 placement，
+        // 用的是默认自动收起，一并对齐）。
+        .czfListSectionSpacing(10)
         .navigationTitle("手势控制")
-        .searchable(text: $searchText, prompt: "搜索设置")
+        .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .always), prompt: "搜索设置")
     }
 
     private func sensitivityPicker(selection: Binding<Int>) -> some View {

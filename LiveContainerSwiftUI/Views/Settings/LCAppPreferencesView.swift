@@ -164,8 +164,11 @@ struct LCAppPreferencesView: View {
             if czfPrefsSearchVisible("保活 后台 无声音频 音频") { keepAliveSection }
             if sharedModel.multiLCStatus != 2, czfPrefsSearchVisible("代理 代理设置 vpn 节点 订阅 核心 线路") { proxySection }
         }
+        // 搜索栏与框架和源页同款（Campbell 定）：段间距
+        // 10、搜索栏导航栏下方常显。
+        .czfListSectionSpacing(10)
         .navigationTitle("应用设置")
-        .searchable(text: $searchText, placement: .automatic, prompt: "搜索设置")
+        .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .always), prompt: "搜索设置")
     }
 
     @ViewBuilder private var interfaceSection: some View {

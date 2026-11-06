@@ -264,8 +264,11 @@ struct LCMultitaskSettingView: View {
             }
             }
         }
+        // 搜索栏与框架和源页同款（Campbell 定）：段间距
+        // 10、搜索栏导航栏下方常显。
+        .czfListSectionSpacing(10)
         .navigationTitle("lc.appBanner.multitask".loc)
         .navigationBarTitleDisplayMode(.inline)
-        .searchable(text: $searchText, placement: .automatic, prompt: "搜索设置")
+        .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .always), prompt: "搜索设置")
     }
 }
