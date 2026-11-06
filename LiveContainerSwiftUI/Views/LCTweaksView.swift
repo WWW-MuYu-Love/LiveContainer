@@ -254,6 +254,9 @@ struct LCTweakFolderView : View {
                 }
             }
         }
+        // 段间距与源页同款（Campbell 定）：同为 10pt（系统
+        // 默认约 35），卡片框架疏密与源页一致。
+        .czfListSectionSpacing(10)
         .navigationTitle(isRoot ? "lc.tabView.tweaks".loc : baseUrl.lastPathComponent)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
@@ -620,9 +623,15 @@ struct LCTweaksView: View {
                 LCTweakFolderView(baseUrl: showShared ? LCPath.lcGroupTweakPath : LCPath.tweakPath, isRoot: true, searchContext: searchContext)
                     .id(showShared)
             }
+            // 页面框架与源页同款（Campbell 定）：整页系统分组
+            // 灰底——下方 List 本就是这个灰，这里补上分段选择
+            // 器那一条，免得顶部一条白、下面灰。
+            .background(Color(.systemGroupedBackground))
         }
         .navigationViewStyle(StackNavigationViewStyle())
-        .searchable(text: $searchContext.query, placement: .automatic, prompt: "搜索模块")
+        // 搜索栏与源页同款（Campbell 定）：导航栏下方常显，
+        // 不用 .automatic 的自动收起；提示词仍是「搜索模块」。
+        .searchable(text: $searchContext.query, placement: .navigationBarDrawer(displayMode: .always), prompt: "搜索模块")
 
     }
 }

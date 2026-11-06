@@ -555,9 +555,10 @@ enum CZFUpdateIgnore {
     }
 }
 
-private extension View {
+extension View {
     /// 列表段间距：listSectionSpacing 是 iOS 17+ 的 API，
-    /// 老系统没有，保持系统默认不强改
+    /// 老系统没有，保持系统默认不强改。内部可见（原为
+    /// private）：模块页列表也要同款段间距，共用这个助手。
     @ViewBuilder
     func czfListSectionSpacing(_ spacing: CGFloat) -> some View {
         if #available(iOS 17.0, *) {
