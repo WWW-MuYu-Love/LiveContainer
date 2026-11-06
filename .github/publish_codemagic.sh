@@ -17,6 +17,9 @@
 # 需要环境变量 GH_TOKEN（在 Codemagic 里配的加密变量；细粒度
 # PAT，只有本仓库 Contents 写权限）。未设置时跳过并以成功退出，
 # 不让发版配置缺失拖垮构建产物本身。
+# 2026-11-07 硬化：令牌齐备后的任何关键 API 调用（改正文/删附件/
+# 传附件）失败一律报错退出，末尾再回读正文与附件自检——验证构建
+# #2 曾因 GH_TOKEN 粘错令牌而旧仓同步全灭、日志却报成功，不能重演。
 set -o pipefail
 # 注意：故意不开 set -u。构建 #5/#6/#8/#9 四次都死在
 # 「MSG: unbound variable」，且每次失败行都是展开 $MSG 的
@@ -73,7 +76,10 @@ except Exception:
     pass")
   if [ -n "$aid" ]; then
     echo "删除旧附件 $name（asset $aid）"
-    curl -s -X DELETE "${AUTH[@]}" "$API/releases/assets/$aid" >/dev/null
+    if ! curl -sf -X DELETE "${AUTH[@]}" "$API/releases/assets/$aid" >/dev/null; then
+      echo "错误：删除旧附件 $name 失败（$REPO），终止发版" >&2
+      exit 1
+    fi
   fi
 }
 
@@ -81,18 +87,22 @@ except Exception:
 # 二合一废弃后，把 update/正式版上残留的 SideStore 包清掉；
 # 每次发版都跑，幂等、无残留时无操作）。
 delete_assets_matching() {
-  local rid="$1" substr="$2"
-  curl -s "${AUTH[@]}" "$API/releases/$rid/assets" | ASSET_SUBSTR="$substr" python3 -c "import json,os,sys
+  local rid="$1" substr="$2" aids aid
+  aids=$(curl -s "${AUTH[@]}" "$API/releases/$rid/assets" | ASSET_SUBSTR="$substr" python3 -c "import json,os,sys
 substr = os.environ['ASSET_SUBSTR']
 try:
     for a in json.load(sys.stdin):
         if substr in (a.get('name') or ''):
             print(a['id'])
 except Exception:
-    pass" | while read -r aid; do
+    pass")
+  for aid in $aids; do
     if [ -n "$aid" ]; then
       echo "清理残留附件（asset $aid）"
-      curl -s -X DELETE "${AUTH[@]}" "$API/releases/assets/$aid" >/dev/null
+      if ! curl -sf -X DELETE "${AUTH[@]}" "$API/releases/assets/$aid" >/dev/null; then
+        echo "错误：清理残留附件（asset $aid）失败（$REPO），终止发版" >&2
+        exit 1
+      fi
     fi
   done
 }
@@ -101,8 +111,11 @@ upload_asset() {
   local rid="$1" file="$2" name
   name=$(basename "$file")
   echo "上传 $name → release $rid"
-  curl -sf -X POST "${AUTH[@]}" -H "Content-Type: application/octet-stream" \
-    --data-binary @"$file" "$UPLOADS/releases/$rid/assets?name=$name" >/dev/null
+  if ! curl -sf -X POST "${AUTH[@]}" -H "Content-Type: application/octet-stream" \
+    --data-binary @"$file" "$UPLOADS/releases/$rid/assets?name=$name" >/dev/null; then
+    echo "错误：上传 $name 到 release $rid 失败（$REPO），终止发版" >&2
+    exit 1
+  fi
 }
 
 replace_assets() {
@@ -118,7 +131,7 @@ replace_assets() {
 export NIGHTLY_LINK="$BUILD_LINK"
 export commit_sha="$SHA"
 export commit_msg="${MSG:-（无提交信息）}"
-export GITHUB_TOKEN="$GH_TOKEN"
+export GITHUB_TOKEN="${GH_TOKEN_NEW:-${GH_TOKEN:-}}"
 python3 -m pip install --quiet requests 2>/dev/null || true
 python3 .github/update_json.py || echo "警告：update_json.py 失败，apps_nightly.json 用仓库内现版"
 
@@ -139,11 +152,18 @@ if [ -z "$UID_REL" ]; then
     -d '{"tag_name":"update","name":"update","prerelease":true,"body":""}' \
     | python3 -c "import json,sys; print(json.load(sys.stdin).get('id',''))")
 fi
+if [ -z "$UID_REL" ]; then
+  echo "错误：无法定位或新建 update release（$REPO），终止发版" >&2
+  exit 1
+fi
 BODY_JSON=$(python3 -c "import json,os
 sha = os.environ['SHA']; msg = os.environ['MSG']
 body = f\"**Commit:** [{sha}](https://github.com/{os.environ['REPO']}/commit/{sha})\n**Version:** {os.environ['VER']}\n**Message:** {msg}\n\nThis is an update release [created automatically with Codemagic workflow]({os.environ['BUILD_LINK']}).\"
 print(json.dumps({'body': body}))")
-curl -sf -X PATCH "${AUTH[@]}" "$API/releases/$UID_REL" -d "$BODY_JSON" >/dev/null
+if ! curl -sf -X PATCH "${AUTH[@]}" "$API/releases/$UID_REL" -d "$BODY_JSON" >/dev/null; then
+  echo "错误：更新 update release 正文失败（$REPO），终止发版" >&2
+  exit 1
+fi
 replace_assets "$UID_REL" "LiveContainer.ipa" ".github/apps_nightly.json"
 delete_assets_matching "$UID_REL" "SideStore"
 echo "update release 已刷新"
@@ -160,9 +180,27 @@ print(json.dumps({'tag_name': os.environ['VER'], 'name': os.environ['VER'],
   FID_REL=$(curl -sf -X POST "${AUTH[@]}" "$API/releases" -d "$CREATE_JSON" \
     | python3 -c "import json,sys; print(json.load(sys.stdin).get('id',''))")
 fi
+if [ -z "$FID_REL" ]; then
+  echo "错误：无法定位或新建正式版 release $VER（$REPO），终止发版" >&2
+  exit 1
+fi
 replace_assets "$FID_REL" "LiveContainer.ipa"
 delete_assets_matching "$FID_REL" "SideStore"
 echo "正式版 $VER 已发布：https://github.com/$REPO/releases/tag/$VER"
+
+# ---- 3) 发后自检（2026-11-07 加）：回读核对，缺一即报错退出，
+# 不许再出现「日志说已发、GitHub 上其实没生效」的静默失败。
+if ! curl -s "${AUTH[@]}" "$API/releases/$UID_REL" | grep -q "$SHA"; then
+  echo "错误：$REPO 的 update 正文未刷新到提交 ${SHA:0:7}，发版未生效" >&2
+  exit 1
+fi
+for rid in "$UID_REL" "$FID_REL"; do
+  if ! curl -s "${AUTH[@]}" "$API/releases/$rid/assets" | grep -q '"name": "LiveContainer.ipa"'; then
+    echo "错误：$REPO 的 release $rid 缺 LiveContainer.ipa 附件，发版未生效" >&2
+    exit 1
+  fi
+done
+echo "发后自检通过：$REPO"
 }
 
 # 主发新仓库，再同步旧仓库（任一令牌缺失只跳过对应目标，不算失败）
