@@ -71,6 +71,10 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
     @State var installQueueCurrent = ""
     // 点顶部小条打开的队列名单（可删单个、可取消剩余）
     @State var queueSheetShow = false
+    // 传输进度面板（加号菜单最下面一项打开，仿 SideKite
+    // 文件页那张）：看进行中的下载/安装/队列，没进行中的
+    // 显示空态。
+    @State var transferProgressShow = false
     
     // ipa installing stuff
     @State var installprogressVisible = false
@@ -356,6 +360,10 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
                                 Button("lc.appList.installFromUrl".loc, systemImage: "link.badge.plus", action: {
                                     Task{ await startInstallFromUrl() }
                                 })
+                                Divider()
+                                Button("传输进度", systemImage: "arrow.down.circle", action: {
+                                    transferProgressShow = true
+                                })
                             } label: {
                                 Label("add", systemImage: "plus")
                             }
@@ -533,6 +541,10 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
                     }
                 }
             }
+        }
+        .sheet(isPresented: $transferProgressShow) {
+            transferProgressSheet
+                .modifier(CZFHalfSheetDetents())
         }
         .betterFileImporter(isPresented: $choosingIPA, types: [.ipa, .tipa], multiple: false, callback: { fileUrls in
             Task { await startInstallApp(fileUrls[0]) }
@@ -738,6 +750,105 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
         }
     }
     
+    // 传输进度面板内容（加号菜单「传输进度」打开）：进行
+    // 中的下载（全局 DownloadHelper，一次一个）、安装、
+    // 队列各一行带进度；都没有时是空态——对勾圆圈 +
+    // 「没有进行中的传输 / 传输进度会显示在这里。」，
+    // 与 SideKite 图里那张一样。
+    private var transferProgressSheet: some View {
+        NavigationView {
+            Group {
+                if downloadHelper.isDownloading || installprogressVisible || installQueueRunning || !pendingInstalls.isEmpty {
+                    List {
+                        if downloadHelper.isDownloading {
+                            Section("下载") {
+                                VStack(alignment: .leading, spacing: 6) {
+                                    Text(downloadHelper.currentDownloadName.isEmpty ? "下载中" : downloadHelper.currentDownloadName)
+                                        .font(.headline)
+                                        .lineLimit(1)
+                                    if downloadHelper.totalSize > 0 {
+                                        ProgressView(value: downloadHelper.downloadProgress, total: 1)
+                                        HStack {
+                                            Text("\(czfTransferFormatBytes(downloadHelper.downloadedSize)) / \(czfTransferFormatBytes(downloadHelper.totalSize))")
+                                            Spacer()
+                                            Text("\(Int(downloadHelper.downloadProgress * 100))%")
+                                        }
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                    } else {
+                                        ProgressView()
+                                        Text("已下载 \(czfTransferFormatBytes(downloadHelper.downloadedSize))")
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    Button("取消下载", role: .destructive) {
+                                        downloadHelper.cancel()
+                                    }
+                                    .font(.subheadline)
+                                }
+                                .padding(.vertical, 4)
+                            }
+                        }
+                        if installprogressVisible {
+                            Section("安装") {
+                                VStack(alignment: .leading, spacing: 6) {
+                                    Text("正在安装")
+                                        .font(.headline)
+                                    ProgressView(value: installProgressPercentage, total: 1)
+                                    Text("\(Int(installProgressPercentage * 100))%")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                                .padding(.vertical, 4)
+                            }
+                        }
+                        if (installQueueRunning && installQueueTotal > 1) || !pendingInstalls.isEmpty {
+                            Section("队列") {
+                                if installQueueRunning && installQueueTotal > 1 {
+                                    Text("队列安装中 \(installQueueDone + 1)/\(installQueueTotal)：\(installQueueCurrent)")
+                                        .lineLimit(1)
+                                }
+                                if !pendingInstalls.isEmpty {
+                                    Text("排队中（\(pendingInstalls.count)）：当前装完接着装")
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    VStack(spacing: 12) {
+                        Image(systemName: "checkmark.circle")
+                            .font(.system(size: 56))
+                            .foregroundStyle(.secondary)
+                        Text("没有进行中的传输")
+                            .font(.title3.bold())
+                        Text("传输进度会显示在这里。")
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+            }
+            .navigationTitle("传输进度")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        transferProgressShow = false
+                    } label: {
+                        Image(systemName: "xmark")
+                    }
+                }
+            }
+        }
+        .navigationViewStyle(StackNavigationViewStyle())
+    }
+
+    private func czfTransferFormatBytes(_ bytes: Int64) -> String {
+        let formatter = ByteCountFormatter()
+        formatter.allowedUnits = [.useKB, .useMB, .useGB]
+        formatter.countStyle = .file
+        return formatter.string(fromByteCount: bytes)
+    }
+
     func onOpenWebViewTapped() async {
         guard let urlToOpen = await webViewUrlInput.open(), urlToOpen != "" else {
             return

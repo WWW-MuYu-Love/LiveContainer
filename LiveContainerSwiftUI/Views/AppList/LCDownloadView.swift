@@ -12,6 +12,9 @@ public final class DownloadHelper : ObservableObject {
     @Published var downloadedSize : Int64 = 0
     @Published var totalSize : Int64 = 0
     @Published var isDownloading = false
+    // 当前下载的文件名（取自下载地址的最后一段）：传输进度
+    // 面板显示用，下载弹窗/胶囊不显示名字、保持原样。
+    @Published var currentDownloadName: String = ""
     @Published var cancelled = false
     // 下载弹窗是否被用户收起（收起后留一个小悬浮钮，下载继续、
     // 界面可以正常操作别的功能，点悬浮钮把弹窗调回来）
@@ -69,6 +72,7 @@ public final class DownloadHelper : ObservableObject {
             if !batchMode {
                 minimized = false
             }
+            currentDownloadName = url.lastPathComponent
 
             downloadProgress = 0.0
             downloadedSize = 0
