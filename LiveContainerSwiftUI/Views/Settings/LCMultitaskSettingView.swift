@@ -31,11 +31,10 @@ struct LCMultitaskSettingView: View {
     // 下次打开自动还原（DecoratedAppSceneViewController 读写，
     // 标准 UserDefaults，与那边 lcUserDefaults 同一本）
     @AppStorage("CZFRestoreWindowState") var restoreWindowState = true
-    // 边缘手势（CZF）：总开关 + 灵敏度三档，宿主判定侧读取；
-    // 默认开（Campbell 2026-11-06 令改回）：键不存在 = 开，
-    // 手动关掉存下的关值不受影响
-    @AppStorage("CZFEdgeGesturesEnabled") var edgeGesturesEnabled = true
-    @AppStorage("CZFEdgeSensitivity") var edgeSensitivity = 1
+    // 边缘手势（CZF）：开关与灵敏度 2026-11-06 已按
+    // Campbell 令拆分并迁进专门的「手势控制」页
+    // （LCEdgeGestureSettingView），入口在本页「窗口与
+    // 手势」段；宿主判定侧在 MultitaskDockView 按分项读。
     // 最小化省电（CZF）：两条都有开关，默认都开，关了即回旧行为。
     // 键在 appGroup，ObjC 侧（Decorated）和 Swift 侧（DockManager）
     // 按“键不存在 = 开”同款读法，@AppStorage 初始值 true 与之对齐。
@@ -210,7 +209,7 @@ struct LCMultitaskSettingView: View {
                 Text("最小化进后台：窗口最小化后把它的场景置为后台，让它自己停渲染、停视频、停定时器，叫回台前自动恢复前台；画中画不受影响。自动关：最小化满上面选的分钟数还没叫回来就直接关窗，彻底停掉；恢复可见后重新计时间，画中画和保活白名单里的 App 豁免。两条关了都回旧行为：最小化只藏视图、一直以前台跑。")
             }
             }
-            if czfMtSearchVisible("窗口 手势 记住 位置 灵敏度 边缘 还原") {
+            if czfMtSearchVisible("窗口 手势 记住 位置 灵敏度 边缘 还原 面板 切换 应用 隐藏 快捷栏 控制") {
             Section {
                 Toggle(isOn: $restoreWindowState) {
                     HStack {
@@ -218,28 +217,18 @@ struct LCMultitaskSettingView: View {
                         Text("记住窗口位置")
                     }
                 }
-                Toggle(isOn: $edgeGesturesEnabled) {
+                NavigationLink {
+                    LCEdgeGestureSettingView()
+                } label: {
                     HStack {
                         LCSettingsIcon(systemName: "hand.draw.fill", color: .blue)
-                        Text("边缘手势")
-                    }
-                }
-                if edgeGesturesEnabled {
-                    Picker(selection: $edgeSensitivity) {
-                        Text("低").tag(0)
-                        Text("中").tag(1)
-                        Text("高").tag(2)
-                    } label: {
-                        HStack {
-                            LCSettingsIcon(systemName: "slider.horizontal.3", color: .purple)
-                            Text("手势灵敏度")
-                        }
+                        Text("手势控制")
                     }
                 }
             } header: {
                 Text("窗口与手势")
             } footer: {
-                Text("记住窗口位置：关掉 App 窗口时记下它的大小、位置和全屏状态，下次打开自动还原。手势灵敏度影响宿主侧的边缘启用范围和触发距离；低档更防误触，高档更好触发。")
+                Text("记住窗口位置：关掉 App 窗口时记下它的大小、位置和全屏状态，下次打开自动还原。边缘手势的开关和灵敏度都在「手势控制」里：四项手势（App 面板/源面板/切换应用/隐藏快捷栏）各自独立开关、各自一份灵敏度（影响启用范围和触发距离，低档更防误触、高档更好触发）。")
             }
             }
             if czfMtSearchVisible("缩放 比例 自适应 默认 窗口") {
