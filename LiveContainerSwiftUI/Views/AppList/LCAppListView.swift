@@ -684,7 +684,10 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
                 Task { await launchAppWithBundleId(bundleId: bundleId, container: nil) }
             }
         }
-        .searchable(text: $searchContext.query, placement: .automatic)
+        // 搜索栏与源页同款同控（Campbell 定）：导航栏下方常显，
+        // 不用 .automatic 的自动收起。搜索词仍写本页 searchContext，
+        // 「打开网址 / 在网上搜索」两行与名称过滤都不受影响。
+        .searchable(text: $searchContext.query, placement: .navigationBarDrawer(displayMode: .always))
 
     }
     
