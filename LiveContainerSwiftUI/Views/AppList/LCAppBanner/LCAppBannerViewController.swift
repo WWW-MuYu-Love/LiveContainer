@@ -1115,7 +1115,7 @@ final class LCAppBannerViewController: UIViewController, UIContextMenuInteractio
     // 导出当前 App 的 IPA 包（Campbell 2026-11-06 追加、
     // 同日菜单行由「分享IPA」改名「导出应用」）：
     // 把已安装的 .app 本体原样复制进 Payload/ 再压成
-    // IPA（经 LCUtils.czfZippedDataForURL 走 PassKitCore 的
+    // IPA（经 LCUtils.czfZippedData(for:) 走 PassKitCore 的
     // PKZipArchiver，与多开管理打包 LC 本体同一个打包
     // 器、同一套 Payload 在根的布局；那个类是私有类，
     // Swift 里不能直接引用），不重签、不改包——装回去
@@ -1137,7 +1137,7 @@ final class LCAppBannerViewController: UIViewController, UIContextMenuInteractio
                 let payload = work.appendingPathComponent("Payload", isDirectory: true)
                 try fm.createDirectory(at: payload, withIntermediateDirectories: true)
                 try fm.copyItem(at: src, to: payload.appendingPathComponent(src.lastPathComponent))
-                guard let zipData = LCUtils.czfZippedDataForURL(work) else {
+                guard let zipData = LCUtils.czfZippedData(for: work) else {
                     try? fm.removeItem(at: work)
                     throw NSError(domain: "CZFShareIPA", code: -2, userInfo: [NSLocalizedDescriptionKey: "打包失败"])
                 }
