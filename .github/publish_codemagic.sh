@@ -1,5 +1,9 @@
 #!/bin/bash
-# Codemagic 构建完成后自动发版到 GitHub（MuYu-Blog/LiveContainer-zh）。
+# Codemagic 构建完成后自动发版到 GitHub（2026-11-07 起双发）：
+# 主发新仓库 MuYu-Blog/LiveContainer（私有，代码所在，用
+# GH_TOKEN_NEW），再把同样的 Release 同步到旧仓库
+# MuYu-Blog/LiveContainer-zh（公开，只留 Release 镜像，用
+# GH_TOKEN）——App 内更新检查仍从旧仓库拉，路径不变。
 # 只发布单版本（Campbell 2026-11-06 令：二合一版废弃）：
 # 1) 刷新滚动 release「update」：正文首行 **Commit:** [sha]（App 内
 #    更新检查靠它比对版本）、LiveContainer.ipa、apps_nightly.json，
@@ -24,15 +28,12 @@ set -o pipefail
 # 就不可能再出现 unbound variable 这一类失败；关键变量另在
 # 展开处加 ${VAR:-} 兜底，逻辑不依赖 set -u。
 
-if [ -z "${GH_TOKEN:-}" ]; then
-  echo "GH_TOKEN 未设置，跳过自动发版（IPA 仍在 Codemagic artifacts 里）"
+if [ -z "${GH_TOKEN:-}" ] && [ -z "${GH_TOKEN_NEW:-}" ]; then
+  echo "GH_TOKEN 与 GH_TOKEN_NEW 都未设置，跳过自动发版（IPA 仍在 Codemagic artifacts 里）"
   exit 0
 fi
 
-export REPO="MuYu-Blog/LiveContainer-zh"
-API="https://api.github.com/repos/$REPO"
-UPLOADS="https://uploads.github.com/repos/$REPO"
-AUTH=(-H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28")
+export REPO="MuYu-Blog/LiveContainer"
 
 # 变量先全部给默认值再逐个赋值；提交号优先用 Codemagic
 # 自带的 CM_COMMIT，git 只作兜底（git 在 Codemagic 检出
@@ -50,7 +51,7 @@ if [ -z "$VER" ]; then
 fi
 BUILD_LINK="${CM_BUILD_URL:-https://codemagic.io}"
 export SHA MSG VER BUILD_LINK
-echo "发版目标：$REPO 版本 ${VER:-} 提交 ${SHA:0:7}（${MSG:-（无提交信息）}）"
+echo "发版：版本 ${VER:-} 提交 ${SHA:0:7}（${MSG:-（无提交信息）}）"
 
 release_id() {
   curl -s "${AUTH[@]}" "$API/releases/tags/$1" | python3 -c "import json,sys
@@ -121,6 +122,15 @@ export GITHUB_TOKEN="$GH_TOKEN"
 python3 -m pip install --quiet requests 2>/dev/null || true
 python3 .github/update_json.py || echo "警告：update_json.py 失败，apps_nightly.json 用仓库内现版"
 
+publish_to() {
+  REPO="$1"
+  local TOKEN="$2"
+  export REPO
+  API="https://api.github.com/repos/$REPO"
+  UPLOADS="https://uploads.github.com/repos/$REPO"
+  AUTH=(-H "Authorization: Bearer $TOKEN" -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28")
+  echo "发版目标：$REPO"
+
 # ---- 1) 滚动 release「update」
 UID_REL=$(release_id "update")
 if [ -z "$UID_REL" ]; then
@@ -153,3 +163,16 @@ fi
 replace_assets "$FID_REL" "LiveContainer.ipa"
 delete_assets_matching "$FID_REL" "SideStore"
 echo "正式版 $VER 已发布：https://github.com/$REPO/releases/tag/$VER"
+}
+
+# 主发新仓库，再同步旧仓库（任一令牌缺失只跳过对应目标，不算失败）
+if [ -n "${GH_TOKEN_NEW:-}" ]; then
+  publish_to "MuYu-Blog/LiveContainer" "$GH_TOKEN_NEW"
+else
+  echo "GH_TOKEN_NEW 未设置，跳过新仓库发版"
+fi
+if [ -n "${GH_TOKEN:-}" ]; then
+  publish_to "MuYu-Blog/LiveContainer-zh" "$GH_TOKEN"
+else
+  echo "GH_TOKEN 未设置，跳过旧仓库同步"
+fi
