@@ -90,13 +90,11 @@ struct LCVPNView: View {
     }
 
     var body: some View {
-        // 独立标签页「代理」（用户定版）：自带导航栈，
-        // 不再借设置页推进；下面的 Form 与确认框/提示框
+        // 设置内子页「代理设置」（Campbell 定）：代理页已
+        // 从底部标签栏移回设置 → 应用设置，由那边推进，
+        // 不再自带导航栈；下面的 Form 与确认框/提示框
         // 原样，行为不变。
-        NavigationView {
-            formContent
-        }
-        .navigationViewStyle(StackNavigationViewStyle())
+        formContent
     }
 
     private var formContent: some View {
@@ -104,7 +102,7 @@ struct LCVPNView: View {
             statusSection
             vpnSection
         }
-        .navigationBarTitle("代理")
+        .navigationBarTitle("代理设置")
             .alert("删除在用节点？", isPresented: $showDeleteActiveConfirm) {
                 Button("删除并停核心", role: .destructive) {
                     CZFVPNManager.shared.removeNodeLinks(pendingDeleteLinks)

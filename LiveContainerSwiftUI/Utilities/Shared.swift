@@ -312,6 +312,9 @@ extension NSNotification {
 public enum LCTabIdentifier: Hashable {
     case sources
     case apps
+    // 代理标签已撤（页面移入设置 → 应用设置「代理设置」）：
+    // 与下面 .search 同理，只留作残留选中值的兼容，
+    // LCTabView 出现时会把它回落到应用页，不是真实页面。
     case vpn
     case tweaks
     case settings

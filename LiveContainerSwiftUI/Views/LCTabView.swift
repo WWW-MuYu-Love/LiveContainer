@@ -38,9 +38,9 @@ struct LCTabView: View {
             }
         )
         .onAppear {
-            // 搜索标签早已去掉：旧版本残留的 .search 选中值
-            // 没有标签可落，回落到应用页，免得白屏。
-            if sharedModel.selectedTab == .search {
+            // 搜索标签与代理标签都已去掉：残留的 .search /
+            // .vpn 选中值没有标签可落，回落到应用页，免得白屏。
+            if sharedModel.selectedTab == .search || sharedModel.selectedTab == .vpn {
                 sharedModel.selectedTab = .apps
             }
             // 提前把多任务管理器建起来：全局手势识别器和 Darwin
@@ -137,9 +137,9 @@ struct LCTabView: View {
     
     // 根标签栏：iOS 26+ 用系统新标签栏（Tab 新 API），以下
     // 用旧标签栏。搜索不在这里：每页用自己的系统搜索框
-    // （见文件头注释）。「代理」是独立标签
-    // （LCTabIdentifier.vpn），在设置左手边，多开副容
-    // 器时不显示。
+    // （见文件头注释）。代理已不在标签栏（Campbell 定）：
+    // 移入设置 → 应用设置最下方「代理设置」，LCVPNView
+    // 改由那边推进；LCTabIdentifier.vpn 只留作兼容值。
     @ViewBuilder private var rootTabs: some View {
         if #available(iOS 26.0, *) {
             TabView(selection: $sharedModel.selectedTab) {
@@ -155,11 +155,6 @@ struct LCTabView: View {
                 if DataManager.shared.model.multiLCStatus != 2 {
                     Tab("lc.tabView.tweaks".loc, systemImage: "wrench.and.screwdriver", value: LCTabIdentifier.tweaks) {
                         LCTweaksView()
-                    }
-                }
-                if DataManager.shared.model.multiLCStatus != 2 {
-                    Tab("代理", systemImage: "network", value: LCTabIdentifier.vpn) {
-                        LCVPNView()
                     }
                 }
                 Tab("lc.tabView.settings".loc, systemImage: "gearshape.fill", value: LCTabIdentifier.settings) {
@@ -189,13 +184,6 @@ struct LCTabView: View {
                             Label("lc.tabView.tweaks".loc, systemImage: "wrench.and.screwdriver")
                         }
                         .tag(LCTabIdentifier.tweaks)
-                }
-                if DataManager.shared.model.multiLCStatus != 2 {
-                    LCVPNView()
-                        .tabItem {
-                            Label("代理", systemImage: "network")
-                        }
-                        .tag(LCTabIdentifier.vpn)
                 }
                 LCSettingsView()
                     .tabItem {
