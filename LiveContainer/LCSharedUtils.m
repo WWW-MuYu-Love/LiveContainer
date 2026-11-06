@@ -211,10 +211,6 @@ NSString* FBSOpenApplicationOptionKeyPayloadURL = @"__PayloadURL";
     return NO;
 }
 
-+ (void)setWebPageUrlForNextLaunch:(NSString*) urlString {
-    [lcUserDefaults setObject:urlString forKey:@"webPageToOpen"];
-}
-
 + (NSURL*)containerLockPath {
     static dispatch_once_t once;
     static NSURL *infoPath;

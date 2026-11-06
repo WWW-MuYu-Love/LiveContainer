@@ -14,7 +14,6 @@ import UserNotifications
 struct LCAppPreferencesView: View {
     @AppStorage("LCFrameShortcutIcons") var frameShortIcon = false
     @AppStorage("LCSwitchAppWithoutAsking") var silentSwitchApp = false
-    @AppStorage("LCOpenWebPageWithoutAsking") var silentOpenWebPage = false
     @AppStorage("LCDontSignApp", store: LCUtils.appGroupUserDefault) var dontSignApp = false
     @AppStorage("LCStrictHiding", store: LCUtils.appGroupUserDefault) var strictHiding = false
     @AppStorage("dynamicColors", store: LCUtils.appGroupUserDefault) var dynamicColors = true
@@ -60,7 +59,7 @@ struct LCAppPreferencesView: View {
 
     var body: some View {
         Form {
-            if czfPrefsSearchVisible("边框 快捷图标 静默 切换 打开网页 严格隐藏 不签名 通知 权限 清除通知") {
+            if czfPrefsSearchVisible("边框 快捷图标 静默 切换 严格隐藏 不签名 通知 权限 清除通知") {
             Section {
             Toggle(isOn: $frameShortIcon) {
                 VStack(alignment: .leading, spacing: 2) {
@@ -80,17 +79,6 @@ struct LCAppPreferencesView: View {
                         Text("lc.settings.silentSwitchApp".loc)
                     }
                     Text("lc.settings.silentSwitchAppDesc".loc)
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                }
-            }
-            Toggle(isOn: $silentOpenWebPage) {
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack {
-                        LCSettingsIcon(systemName: "globe", color: .teal)
-                        Text("lc.settings.silentOpenWebPage".loc)
-                    }
-                    Text("lc.settings.silentOpenWebPageDesc".loc)
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }

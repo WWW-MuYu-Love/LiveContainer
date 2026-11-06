@@ -185,62 +185,6 @@ void openUniversalLink(NSString* decodedUrl) {
     [uacm handleActivityContinuation:dict isSuspended:nil];
 }
 
-void LCOpenWebPage(NSString* webPageUrlString, NSString* originalUrl) {
-    if ([NSUserDefaults.lcUserDefaults boolForKey:@"LCOpenWebPageWithoutAsking"]) {
-        openUniversalLink(webPageUrlString);
-        return;
-    }
-    
-    NSURLComponents* newUrlComp = [NSURLComponents componentsWithString:originalUrl];
-    __block BOOL anotherLCLaunched = false;
-    forEachInstalledNotCurrentLC(YES, ^(NSString * scheme, BOOL* isBreak) {
-        newUrlComp.scheme = scheme;
-        [UIApplication.sharedApplication openURL:newUrlComp.URL options:@{} completionHandler:nil];
-        *isBreak = YES;
-        anotherLCLaunched = YES;
-        return;
-    });
-    if(anotherLCLaunched) {
-        return;
-    }
-    
-    NSString *message = @"lc.guestTweak.openWebPageTip".loc;
-    UIWindow *window = [[UIWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"LiveContainer" message:message preferredStyle:UIAlertControllerStyleAlert];
-    UIAlertAction* okAction = [UIAlertAction actionWithTitle:@"lc.common.ok".loc style:UIAlertActionStyleDefault handler:^(UIAlertAction * action) {
-        [NSClassFromString(@"LCSharedUtils") setWebPageUrlForNextLaunch:webPageUrlString];
-        [NSClassFromString(@"LCSharedUtils") launchToGuestAppWithClassicMode:0];
-    }];
-    [alert addAction:okAction];
-    UIAlertAction* openNowAction = [UIAlertAction actionWithTitle:@"lc.guestTweak.openInCurrentApp".loc style:UIAlertActionStyleDefault handler:^(UIAlertAction * action) {
-        openUniversalLink(webPageUrlString);
-        window.windowScene = nil;
-    }];
-
-    forEachInstalledNotCurrentLC(NO, ^(NSString * scheme, BOOL* isBreak) {
-        UIAlertAction* openlc2Action = [UIAlertAction actionWithTitle:[@"lc.guestTweak.openInLc %@" localizeWithFormat:scheme] style:UIAlertActionStyleDefault handler:^(UIAlertAction * action) {
-            newUrlComp.scheme = scheme;
-            [UIApplication.sharedApplication openURL:newUrlComp.URL options:@{} completionHandler:nil];
-            window.windowScene = nil;
-        }];
-        [alert addAction:openlc2Action];
-    });
-    
-    [alert addAction:openNowAction];
-    UIAlertAction* cancelAction = [UIAlertAction actionWithTitle:@"lc.common.cancel".loc style:UIAlertActionStyleCancel handler:^(UIAlertAction * action) {
-        window.windowScene = nil;
-    }];
-    [alert addAction:cancelAction];
-    window.rootViewController = [UIViewController new];
-    window.windowLevel = UIApplication.sharedApplication.windows.lastObject.windowLevel + 1;
-    window.windowScene = (id)UIApplication.sharedApplication.connectedScenes.anyObject;
-    [window makeKeyAndVisible];
-    [window.rootViewController presentViewController:alert animated:YES completion:nil];
-    objc_setAssociatedObject(alert, @"window", window, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    
-
-}
-
 void LCOpenSideStoreURL(NSURL* sidestoreUrl) {
     if ([NSUserDefaults.lcUserDefaults boolForKey:@"LCSwitchAppWithoutAsking"]) {
         [NSUserDefaults.lcUserDefaults setObject:sidestoreUrl.absoluteString forKey:@"launchAppUrlScheme"];
@@ -485,14 +429,6 @@ static LCControlAppURLHandling LCHandleControlAppURL(NSURL *url, NSString** modi
             handleLiveContainerLaunch(bundleName, containerFolderName, url);
         }
         
-        return LCControlAppURLHandlingStop;
-    }
-
-    if([urlHost isEqualToString:@"open-web-page"]) {
-        NSString *decodedUrl = LCDecodedURLStringFromControlURL(url);
-        if(decodedUrl) {
-            LCOpenWebPage(decodedUrl, url.absoluteString);
-        }
         return LCControlAppURLHandlingStop;
     }
 

@@ -85,10 +85,6 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
     // 多开安装时输新名字（分清两个同款 App 用）
     @StateObject private var installAsNewNameInput = InputHelper()
     
-    @State var webViewOpened = false
-    @State var webViewURL : URL = URL(string: "about:blank")!
-    @StateObject private var webViewUrlInput = InputHelper()
-    
     @EnvironmentObject var downloadHelper: DownloadHelper
     @StateObject private var installUrlInput = InputHelper()
     
@@ -117,11 +113,6 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
     
     @State private var isViewAppeared = false
     
-    // 本页搜索（回到最初）：页面自己的系统搜索框写这份
-    // searchContext，名称过滤和浏览器行（打开网址/在网
-    // 上搜索，进内置浏览器、IPA 直链下载安装）都挂在它
-    // 上面，0.2 秒防抖。
-    @ObservedObject var searchContext: SearchContext = SearchContext()
     var sortedApps: [LCAppModel] {
         return sharedAppSortManager.sortedApps
     }
@@ -130,62 +121,14 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
         return sharedAppSortManager.sortedHiddenApps
     }
     
+    // 应用页搜索已删（Campbell 2026-11-07 令）：列表不再按
+    // 词过滤，filteredApps 即全量排序结果，保留属性名免动引用处。
     var filteredApps: [LCAppModel] {
-        let apps = sortedApps
-        if searchContext.debouncedQuery.isEmpty {
-            return apps
-        } else {
-            // 只搜 App 名称（用户定：应用页搜索只认名称，
-            // 不再连标识符一起匹配），没命中的直接隐藏。
-            return apps.filter { app in
-                app.appInfo.displayName().localizedCaseInsensitiveContains(searchContext.debouncedQuery)
-            }
-        }
+        return sortedApps
     }
 
     var filteredHiddenApps: [LCAppModel] {
-        let apps = sortedHiddenApps
-        if searchContext.debouncedQuery.isEmpty || !sharedModel.isHiddenAppUnlocked {
-            return apps
-        } else {
-            return apps.filter { app in
-                app.appInfo.displayName().localizedCaseInsensitiveContains(searchContext.debouncedQuery)
-            }
-        }
-    }
-
-    // 浏览器式搜索（2026-10-24 用户定）：搜索框不再只滤已装 App，
-    // 输入像网址就把网址放最上面点开直达，其他输入给一行网上搜索，
-    // 点开走应用内浏览器（复用已有的 LCWebView 全屏页）。
-    private var czfSearchText: String {
-        searchContext.debouncedQuery.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    // 输入像网址才返回可直开的 URL：带 http(s):// 的直接用；不带
-    // 协议的域名（如 example.com、www.example.com）补 https；带空
-    // 格的短语、纯版本号、带大写的包名一律不算网址。
-    private var czfSearchURL: URL? {
-        let q = czfSearchText
-        guard !q.isEmpty, !q.contains(" ") else { return nil }
-        if let comps = URLComponents(string: q), let scheme = comps.scheme?.lowercased(),
-           (scheme == "http" || scheme == "https"), comps.host != nil {
-            return comps.url
-        }
-        // 带其他协议头的（如 ftp://、xxx://）不是网址输入，不补协议
-        if q.contains("://") { return nil }
-        guard q.contains(".") else { return nil }
-        let parts = q.split(separator: ".")
-        let isIPv4 = parts.count == 4 && parts.allSatisfy { !$0.isEmpty && $0.allSatisfy({ $0.isNumber }) }
-        guard parts.count >= 2,
-              (isIPv4 || (q == q.lowercased() && parts.last!.count >= 2 && parts.last!.allSatisfy({ $0.isLetter }))) else { return nil }
-        return URL(string: "https://" + q)
-    }
-
-    private var czfSearchWebURL: URL? {
-        let q = czfSearchText
-        guard !q.isEmpty else { return nil }
-        let encoded = q.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? q
-        return URL(string: "https://www.baidu.com/s?wd=" + encoded)
+        return sortedHiddenApps
     }
 
     init() {
@@ -204,60 +147,13 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
                 .hidden()
                 
                 LazyVStack {
-                    // 浏览器式搜索行：有输入时才出现，网址放最上面
-                    if !czfSearchText.isEmpty {
-                        if let url = czfSearchURL {
-                            Button {
-                                Task { await openWebView(urlString: url.absoluteString) }
-                            } label: {
-                                HStack(spacing: 12) {
-                                    Image(systemName: "globe")
-                                        .font(.title3)
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text("打开网址")
-                                            .font(.headline)
-                                        Text(url.absoluteString)
-                                            .font(.subheadline)
-                                            .foregroundColor(.secondary)
-                                            .lineLimit(1)
-                                    }
-                                    Spacer()
-                                    Image(systemName: "chevron.right")
-                                        .foregroundColor(.secondary)
-                                }
-                                .padding(10)
-                                .background(Color(.secondarySystemBackground))
-                                .clipShape(RoundedRectangle(cornerRadius: 16))
-                            }
-                            .buttonStyle(.plain)
-                        }
-                        Button {
-                            if let url = czfSearchWebURL {
-                                Task { await openWebView(urlString: url.absoluteString) }
-                            }
-                        } label: {
-                            HStack(spacing: 12) {
-                                Image(systemName: "magnifyingglass")
-                                    .font(.title3)
-                                Text("在网上搜索“\(czfSearchText)”")
-                                    .font(.headline)
-                                Spacer()
-                                Image(systemName: "chevron.right")
-                                    .foregroundColor(.secondary)
-                            }
-                            .padding(10)
-                            .background(Color(.secondarySystemBackground))
-                            .clipShape(RoundedRectangle(cornerRadius: 16))
-                        }
-                        .buttonStyle(.plain)
-                    }
                     ForEach(filteredApps, id: \.self) { app in
                         LCAppBanner(appModel: app, delegate: self)
                     }
                     .transition(.scale)
                 }
                 .padding()
-                .animation(searchContext.isTyping ? nil : .easeInOut, value: filteredApps)
+                .animation(.easeInOut, value: filteredApps)
 
                 VStack {
                     if LCUtils.appGroupUserDefault.bool(forKey: "LCStrictHiding") {
@@ -277,7 +173,7 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
                             }
                             .padding()
                             .transition(.opacity)
-                            .animation(searchContext.isTyping ? nil : .easeInOut, value: filteredHiddenApps)
+                            .animation(.easeInOut, value: filteredHiddenApps)
                             
                             if sharedModel.hiddenApps.count == 0 {
                                 Text("lc.appList.hideAppTip".loc)
@@ -304,18 +200,18 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
                             }
                         }
                         .padding()
-                        .animation(searchContext.isTyping ? nil : .easeInOut, value: filteredHiddenApps)
+                        .animation(.easeInOut, value: filteredHiddenApps)
                     }
 
                     let appCount = sharedModel.isHiddenAppUnlocked ? filteredApps.count + filteredHiddenApps.count : filteredApps.count
-                    Text(appCount > 0 || searchContext.debouncedQuery != "" ? "lc.appList.appCounter %lld".localizeWithFormat(appCount) : (sharedModel.multiLCStatus == 2 ? "lc.appList.convertToSharedToShowInLC2".loc : "lc.appList.installTip".loc))
+                    Text(appCount > 0 ? "lc.appList.appCounter %lld".localizeWithFormat(appCount) : (sharedModel.multiLCStatus == 2 ? "lc.appList.convertToSharedToShowInLC2".loc : "lc.appList.installTip".loc))
                         .padding(.horizontal)
                         .foregroundStyle(.gray)
-                        .animation(searchContext.isTyping ? nil : .easeInOut, value: appCount)
+                        .animation(.easeInOut, value: appCount)
                         .onTapGesture(count: 3) {
                             Task { await authenticateUser() }
                         }
-                }.animation(searchContext.isTyping ? nil : .easeInOut, value: LCUtils.appGroupUserDefault.bool(forKey: "LCStrictHiding"))
+                }.animation(.easeInOut, value: LCUtils.appGroupUserDefault.bool(forKey: "LCStrictHiding"))
 
                 if sharedModel.multiLCStatus == 2 {
                     Text("lc.appList.manageInPrimaryTip".loc).foregroundStyle(.gray).padding()
@@ -386,11 +282,6 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
 
                 }
                 
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("lc.appList.openLink".loc, systemImage: "link", action: {
-                        Task { await onOpenWebViewTapped() }
-                    })
-                }
                 
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
@@ -584,18 +475,6 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
             }
         }
         .textFieldAlert(
-            isPresented: $webViewUrlInput.show,
-            title:  "lc.appList.enterUrlTip".loc,
-            text: $webViewUrlInput.initVal,
-            placeholder: "scheme://",
-            action: { newText in
-                webViewUrlInput.close(result: newText)
-            },
-            actionCancel: {_ in
-                webViewUrlInput.close(result: nil)
-            }
-        )
-        .textFieldAlert(
             isPresented: $installAsNewNameInput.show,
             title: "给新 App 起个名字",
             text: $installAsNewNameInput.initVal,
@@ -627,11 +506,6 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
         .onChange(of: jitAlert.show) { newValue in
             sharedModel.isJITModalOpen = newValue
         }
-        .fullScreenCover(isPresented: $webViewOpened) {
-            LCWebView(url: $webViewURL, isPresent: $webViewOpened, itmsServicesHandler: { urlStr in
-                await installFromPlist(urlStr: urlStr)
-            })
-        }
         .fullScreenCover(isPresented: $safariViewOpened) {
             SafariView(url: $safariViewURL)
         }
@@ -643,10 +517,6 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
         }
         .onAppear() {
             if !isViewAppeared {
-                if let webpageUrlStr = UserDefaults.standard.string(forKey: "webPageToOpen") {
-                    Task { await openWebView(urlString: webpageUrlStr) }
-                    UserDefaults.standard.set(nil, forKey: "webPageToOpen")
-                }
                 
                 guard sharedModel.selectedTab == .apps, let link = sharedModel.deepLink else { return }
                 sharedModel.deepLink = nil
@@ -658,19 +528,6 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
             guard sharedModel.selectedTab == .apps, let link else { return }
             sharedModel.deepLink = nil
             handleURL(url: link)
-        }
-        .onDrop(of: [.url], isTargeted: nil) { providers in
-            guard let provider = providers.first else { return false }
-            _ = provider.loadObject(ofClass: URL.self) { url, error in
-                guard let url else { return }
-                Task {
-                    guard let urlToOpen = await webViewUrlInput.open(initVal: url.absoluteString), urlToOpen != "" else {
-                        return
-                    }
-                    await openWebView(urlString: urlToOpen)
-                }
-            }
-            return true
         }
         .onReceive(NotificationCenter.default.publisher(for: NSNotification.InstallAppNotification)) { obj in
             if let obj2 = obj.object as? [String: Any], let installUrl = obj2["url"] as? URL {
@@ -684,7 +541,6 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
                 Task { await launchAppWithBundleId(bundleId: bundleId, container: nil) }
             }
         }
-        .searchable(text: $searchContext.query, placement: .automatic)
 
     }
     
@@ -730,13 +586,6 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
         }
     }
     
-    func onOpenWebViewTapped() async {
-        guard let urlToOpen = await webViewUrlInput.open(), urlToOpen != "" else {
-            return
-        }
-        await openWebView(urlString: urlToOpen)
-        
-    }
     func onAppear() {
         for app in sharedModel.apps {
             app.delegate = self
@@ -748,7 +597,10 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
     }
     
     
-    func openWebView(urlString: String) async {
+    // 内置浏览器已删（Campbell 2026-11-07 令）：这里只剩
+    // itms-services 安装与自定义 scheme 拉起已装 App 两条链；
+    // http(s) 走到末尾直接结束，不再有网页打开去向。
+    func openSchemeURL(urlString: String) async {
         guard var urlToOpen = URLComponents(string: urlString), urlToOpen.url != nil else {
             errorInfo = "lc.appList.urlInvalidError".loc
             errorShow = true
@@ -810,15 +662,6 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
             }
             
             return
-        }
-        webViewURL = urlToOpen.url!
-        if webViewOpened {
-            webViewOpened = false
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1, execute: {
-                webViewOpened = true
-            })
-        } else {
-            webViewOpened = true
         }
     }
 
@@ -1767,7 +1610,7 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
                             (sharedModel.multiLCStatus != 2 || app.appInfo.isShared)
                         }) {
                             if var url = URL(string: "stosdebug://enableJIT?bundleId=\(Bundle.main.bundleIdentifier!)&appName=\(encodedAppName)&pid=\(pid)&relaunchApp=false&forcePID=true\(encoded)") {
-                                Task { await openWebView(urlString: url.absoluteString) }
+                                Task { await openSchemeURL(urlString: url.absoluteString) }
                             } else {
                                 errorInfo = "Failed to build JIT URL."
                                 errorShow = true
@@ -1795,7 +1638,7 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
                             return app.appInfo.urlSchemes().contains("stikjit") &&
                             (sharedModel.multiLCStatus != 2 || app.appInfo.isShared)
                         }) {
-                            Task { await openWebView(urlString: url.absoluteString) }
+                            Task { await openSchemeURL(urlString: url.absoluteString) }
                         } else {
                             errorInfo = "StikDebug is not found. Please install it first and switch it to shared app."
                             errorShow = true
@@ -1861,7 +1704,7 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
                 
                 if let decodedData = Data(base64Encoded: queryItem.value ?? ""),
                    let decodedUrl = String(data: decodedData, encoding: .utf8) {
-                    Task { await openWebView(urlString: decodedUrl) }
+                    Task { await openSchemeURL(urlString: decodedUrl) }
                 }
             }
         } else if url.host == "livecontainer-launch" {
