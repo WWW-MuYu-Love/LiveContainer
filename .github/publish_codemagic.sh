@@ -20,6 +20,10 @@
 # 2026-11-07 硬化：令牌齐备后的任何关键 API 调用（改正文/删附件/
 # 传附件）失败一律报错退出，末尾再回读正文与附件自检——验证构建
 # #2 曾因 GH_TOKEN 粘错令牌而旧仓同步全灭、日志却报成功，不能重演。
+# 2026-11-07 再加：查询/新建 release 与改正文都打印 HTTP 状态码，
+# 失败时把 GitHub 的错误正文一并打进日志——构建 #3 死在旧仓新建
+# update release 且无状态码可查，无法区分 401（令牌无效）与
+# 404（令牌范围不覆盖该仓库），这次必须看清。
 set -o pipefail
 # 注意：故意不开 set -u。构建 #5/#6/#8/#9 四次都死在
 # 「MSG: unbound variable」，且每次失败行都是展开 $MSG 的
@@ -57,7 +61,11 @@ export SHA MSG VER BUILD_LINK
 echo "发版：版本 ${VER:-} 提交 ${SHA:0:7}（${MSG:-（无提交信息）}）"
 
 release_id() {
-  curl -s "${AUTH[@]}" "$API/releases/tags/$1" | python3 -c "import json,sys
+  local out code
+  out=$(curl -s -w $'\n%{http_code}' "${AUTH[@]}" "$API/releases/tags/$1")
+  code=$(printf '%s' "$out" | tail -n 1)
+  echo "查询 release（tag=$1，$REPO）→ HTTP $code" >&2
+  printf '%s' "$out" | sed '$d' | python3 -c "import json,sys
 try:
     print(json.load(sys.stdin).get('id',''))
 except Exception:
@@ -148,9 +156,18 @@ publish_to() {
 UID_REL=$(release_id "update")
 if [ -z "$UID_REL" ]; then
   echo "找不到 update release，新建一个"
-  UID_REL=$(curl -sf -X POST "${AUTH[@]}" "$API/releases" \
-    -d '{"tag_name":"update","name":"update","prerelease":true,"body":""}' \
-    | python3 -c "import json,sys; print(json.load(sys.stdin).get('id',''))")
+  CREATE_OUT=$(curl -s -w $'\n%{http_code}' -X POST "${AUTH[@]}" "$API/releases" \
+    -d '{"tag_name":"update","name":"update","prerelease":true,"body":""}')
+  CREATE_CODE=$(printf '%s' "$CREATE_OUT" | tail -n 1)
+  echo "新建 update release → HTTP $CREATE_CODE" >&2
+  if [[ "$CREATE_CODE" != 2* ]]; then
+    echo "新建 update release 未成功，GitHub 返回：$(printf '%s' "$CREATE_OUT" | sed '$d')" >&2
+  fi
+  UID_REL=$(printf '%s' "$CREATE_OUT" | sed '$d' | python3 -c "import json,sys
+try:
+    print(json.load(sys.stdin).get('id',''))
+except Exception:
+    print('')")
 fi
 if [ -z "$UID_REL" ]; then
   echo "错误：无法定位或新建 update release（$REPO），终止发版" >&2
@@ -160,8 +177,11 @@ BODY_JSON=$(python3 -c "import json,os
 sha = os.environ['SHA']; msg = os.environ['MSG']
 body = f\"**Commit:** [{sha}](https://github.com/{os.environ['REPO']}/commit/{sha})\n**Version:** {os.environ['VER']}\n**Message:** {msg}\n\nThis is an update release [created automatically with Codemagic workflow]({os.environ['BUILD_LINK']}).\"
 print(json.dumps({'body': body}))")
-if ! curl -sf -X PATCH "${AUTH[@]}" "$API/releases/$UID_REL" -d "$BODY_JSON" >/dev/null; then
-  echo "错误：更新 update release 正文失败（$REPO），终止发版" >&2
+PATCH_OUT=$(curl -s -w $'\n%{http_code}' -X PATCH "${AUTH[@]}" "$API/releases/$UID_REL" -d "$BODY_JSON")
+PATCH_CODE=$(printf '%s' "$PATCH_OUT" | tail -n 1)
+echo "更新 update release 正文 → HTTP $PATCH_CODE" >&2
+if [[ "$PATCH_CODE" != 2* ]]; then
+  echo "错误：更新 update release 正文失败（$REPO，HTTP $PATCH_CODE）：$(printf '%s' "$PATCH_OUT" | sed '$d')" >&2
   exit 1
 fi
 replace_assets "$UID_REL" "LiveContainer.ipa" ".github/apps_nightly.json"
@@ -177,8 +197,17 @@ sha = os.environ['SHA']
 print(json.dumps({'tag_name': os.environ['VER'], 'name': os.environ['VER'],
   'body': f'**Commit:** [{sha}](https://github.com/{os.environ[\"REPO\"]}/commit/{sha})\n\n由 Codemagic 自动构建发布。',
   'draft': False, 'prerelease': False, 'make_latest': 'true'}))")
-  FID_REL=$(curl -sf -X POST "${AUTH[@]}" "$API/releases" -d "$CREATE_JSON" \
-    | python3 -c "import json,sys; print(json.load(sys.stdin).get('id',''))")
+  CREATE_OUT=$(curl -s -w $'\n%{http_code}' -X POST "${AUTH[@]}" "$API/releases" -d "$CREATE_JSON")
+  CREATE_CODE=$(printf '%s' "$CREATE_OUT" | tail -n 1)
+  echo "新建正式版 release $VER → HTTP $CREATE_CODE" >&2
+  if [[ "$CREATE_CODE" != 2* ]]; then
+    echo "新建正式版 release 未成功，GitHub 返回：$(printf '%s' "$CREATE_OUT" | sed '$d')" >&2
+  fi
+  FID_REL=$(printf '%s' "$CREATE_OUT" | sed '$d' | python3 -c "import json,sys
+try:
+    print(json.load(sys.stdin).get('id',''))
+except Exception:
+    print('')")
 fi
 if [ -z "$FID_REL" ]; then
   echo "错误：无法定位或新建正式版 release $VER（$REPO），终止发版" >&2
