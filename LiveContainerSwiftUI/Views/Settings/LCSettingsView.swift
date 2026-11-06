@@ -60,9 +60,9 @@ struct LCSettingsView: View {
     @State private var updateChecking = false
     @State private var updateInfo: CZFUpdateInfo?
 
-    // 本地交接进行中的安装器名（先自下载更新包再喂给它）：
-    // Seal / Sidekite 共用一把闸（本机服务是单例，一次只
-    // 供一份包），非空时两个按钮一起禁用。
+    // 文件递交进行中的安装器名（先自下载更新包再弹分享
+    // 表递文件）：Seal / Sidekite 共用一把闸（同一时间只
+    // 下一份包、弹一张分享表），非空时两个按钮一起禁用。
     @State private var handoffBusyApp: String?
 
     // 本页搜索词：页面自己的系统搜索框写它。
@@ -476,8 +476,9 @@ struct LCSettingsView: View {
     // 那个应用）就弹错。三个入口（用户定版顺序）：Seal /
     // Sidekite / SideInstaller（保留、排最后）；SideStore
     // 按钮已按 Campbell 2026-11-06 令删除。其中 Seal 与
-    // Sidekite 走本地交接（startLocalHandoff：本 App 先下
-    // 载再喂本机地址），SideInstaller 仍是直链交接。
+    // Sidekite 走文件递交（startShareDelivery：本 App 先
+    // 下载、再弹分享表递文件，本函数只作它下载失败时的
+    // 直链退路），SideInstaller 仍是直链交接。
     private func openInstall(scheme: String, appName: String) {
         guard let info = updateInfo else { return }
         var components = URLComponents()
@@ -495,23 +496,27 @@ struct LCSettingsView: View {
 
     // 注：Seal 注册了 seal 和 sidestore 两个 scheme，用户
     // 定用 sidestore（不要自创 seal://），所以下面 Seal 的
-    // 交接 scheme 传的也是 "sidestore"。
-    // 更新本地交接（Campbell 2026-11-06 先点名 Sidekite、
-    // 随后 Seal 也改）：先由 LiveContainer 自己把更新包下
-    // 载到本地，再起本机服务把包直接喂给安装器（<scheme>:
-    // //install?url= 本机回环地址），全程不弹分享表、也不
-    // 让安装器再去直连 GitHub 下（Sidekite 那边下 GitHub
-    // 曾超时失败）。下载或起服务失败就退回原来的直链交接
-    // （openInstall 原路），并把退回这件事弹出来说明，不
-    // 静默换路。本机服务是单例，一次只供一份包，两钮共闸。
-    private func startLocalHandoff(scheme: String, appName: String) {
+    // 直链退路 scheme 传的也是 "sidestore"。
+    // 更新文件递交（Campbell 2026-11-06 改令，取代此前的
+    // 本机服务交接）：先由 LiveContainer 自己把更新包下载
+    // 到本地，再弹系统分享表、把 IPA 文件递给用户点选的
+    // 安装器——Sidekite / Seal 都注册了 .ipa 文档关联，
+    // 在分享表里点中即触发它的导入安装，和在文件 App 里
+    // 共享过去一样。文件通道免不了这一步点选（系统规定，
+    // Campbell 已确认接受）；两钮下载的是同一份更新包、
+    // 弹的是同一张分享表，按钮名只标示主推目标，点哪家
+    // 由用户在分享表里定。下载失败就退回直链交接
+    // （openInstall 原路）并弹错说明，不静默换路。分享结
+    // 束（完成或取消）后删掉本地递交副本，不长期占空间。
+    // 本机服务 CZFLocalIPAServer 已随本次改令整体删除。
+    private func startShareDelivery(scheme: String, appName: String) {
         guard let info = updateInfo, handoffBusyApp == nil else { return }
         handoffBusyApp = appName
         Task {
             do {
                 let (tmpURL, response) = try await URLSession.shared.download(from: info.downloadURL)
                 if let http = response as? HTTPURLResponse, http.statusCode != 200 {
-                    throw NSError(domain: "CZFUpdateHandoff", code: http.statusCode, userInfo: [NSLocalizedDescriptionKey: "更新包下载失败（HTTP \(http.statusCode)）"])
+                    throw NSError(domain: "CZFUpdateShare", code: http.statusCode, userInfo: [NSLocalizedDescriptionKey: "更新包下载失败（HTTP \(http.statusCode)）"])
                 }
                 let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
                 let dir = caches.appendingPathComponent("CZFUpdateHandoff", isDirectory: true)
@@ -520,30 +525,17 @@ struct LCSettingsView: View {
                 let dest = dir.appendingPathComponent(fileName)
                 try? FileManager.default.removeItem(at: dest)
                 try FileManager.default.moveItem(at: tmpURL, to: dest)
-                let localURL = try await CZFLocalIPAServer.shared.start(fileURL: dest)
                 await MainActor.run {
                     handoffBusyApp = nil
-                    var components = URLComponents()
-                    components.scheme = scheme
-                    components.host = "install"
-                    components.queryItems = [URLQueryItem(name: "url", value: localURL.absoluteString)]
-                    guard let url = components.url else {
-                        CZFLocalIPAServer.shared.stop()
-                        return
-                    }
-                    UIApplication.shared.open(url, options: [:]) { success in
-                        if !success {
-                            CZFLocalIPAServer.shared.stop()
-                            errorInfo = "没能打开 \(appName)，请确认它已安装"
-                            errorShow = true
-                        }
+                    czfPresentActivitySheet(items: [dest]) {
+                        try? FileManager.default.removeItem(at: dest)
                     }
                 }
             } catch {
                 await MainActor.run {
                     handoffBusyApp = nil
                     openInstall(scheme: scheme, appName: appName)
-                    errorInfo = "更新包本地交接没成（\(error.localizedDescription)），已改用直链交给 \(appName)、由它自己下载"
+                    errorInfo = "更新包下载没成（\(error.localizedDescription)），已改用直链交给 \(appName)、由它自己下载"
                     errorShow = true
                 }
             }
@@ -573,7 +565,7 @@ struct LCSettingsView: View {
             .disabled(updateChecking)
             if updateInfo != nil {
                 Button {
-                    startLocalHandoff(scheme: "sidestore", appName: "Seal")
+                    startShareDelivery(scheme: "sidestore", appName: "Seal")
                 } label: {
                     HStack {
                         LCSettingsIcon(systemName: "arrow.clockwise.circle", color: .green)
@@ -582,7 +574,7 @@ struct LCSettingsView: View {
                 }
                 .disabled(handoffBusyApp != nil)
                 Button {
-                    startLocalHandoff(scheme: "sidekite", appName: "Sidekite")
+                    startShareDelivery(scheme: "sidekite", appName: "Sidekite")
                 } label: {
                     HStack {
                         LCSettingsIcon(systemName: "arrow.clockwise.circle", color: .green)

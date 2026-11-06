@@ -539,6 +539,7 @@ struct LCDataManagementView : View {
                     }
                 }
             }
+            .modifier(CZFHalfSheetDetents())
         }
         .sheet(isPresented: $showRestoreSelect) {
             NavigationView {
@@ -691,6 +692,7 @@ struct LCDataManagementView : View {
                             }
                         }
                     }
+                    .modifier(CZFHalfSheetDetents())
                 }
                 // 选择性多选恢复：恢复 sheet 内再叠一层 sheet
                 // （与文件夹 picker、清单预览同款嵌套，不关恢复
@@ -752,8 +754,10 @@ struct LCDataManagementView : View {
                             }
                         }
                     }
+                    .modifier(CZFHalfSheetDetents())
                 }
             }
+            .modifier(CZFHalfSheetDetents())
         }
         .sheet(isPresented: $showScheduleBackup) {
             NavigationView {
@@ -824,6 +828,7 @@ struct LCDataManagementView : View {
                     }
                 }
             }
+            .modifier(CZFHalfSheetDetents())
         }
         .sheet(isPresented: $showScheduleCache) {
             NavigationView {
@@ -868,6 +873,7 @@ struct LCDataManagementView : View {
                     }
                 }
             }
+            .modifier(CZFHalfSheetDetents())
         }
     }
     

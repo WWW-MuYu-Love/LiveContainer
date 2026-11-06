@@ -28,6 +28,10 @@ uint32_t dyld_get_sdk_version(const struct mach_header* mh);
 
 + (void)validateJITLessSetupWithCompletionHandler:(void (^)(BOOL success, NSError *error))completionHandler;
 + (NSURL *)archiveIPAWithBundleName:(NSString*)newBundleName includingExtraInfoDict:(NSDictionary *)extraInfoDict error:(NSError **)error;
+// 把目录压成 zip 数据（PKZipArchiver 是 PassKitCore 的
+// 私有类，须先 dlopen 再 NSClassFromString 取，Swift 里
+// 不能直接引用这个类名，故经此助手转一手）。
++ (NSData *)czfZippedDataForURL:(NSURL *)url;
 + (NSData *)certificateData;
 + (void)launchMultitaskGuestApp:(NSString *)displayName completionHandler:(void (^)(NSNumber *pid, NSError *error))completionHandler API_AVAILABLE(ios(16.0));
 

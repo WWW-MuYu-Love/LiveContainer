@@ -305,20 +305,41 @@ struct BasicButtonStyle: ButtonStyle {
 // 包装已删，勿再用）。找 key window 的 root 再沿
 // presentedViewController 走到最顶层去 present；
 // iPad 上给 popover 一个居中锚点免崩。延迟一拍执行，
-// 避开长按菜单/警告框还没收完的当口。
-func czfPresentActivitySheet(items: [Any]) {
+// 避开长按菜单/警告框还没收完的当口。onComplete 在分
+// 享结束（完成或取消都会触发）后回调，供递交临时文件
+// 的调用方回收副本；不需要的调用方不传即可。
+func czfPresentActivitySheet(items: [Any], onComplete: (() -> Void)? = nil) {
     DispatchQueue.main.async {
         guard let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
               let root = scene.windows.first(where: { $0.isKeyWindow })?.rootViewController else { return }
         var top = root
         while let presented = top.presentedViewController { top = presented }
         let vc = UIActivityViewController(activityItems: items, applicationActivities: nil)
+        vc.completionWithItemsHandler = { _, _, _, _ in onComplete?() }
         if let pop = vc.popoverPresentationController {
             pop.sourceView = top.view
             pop.sourceRect = CGRect(x: top.view.bounds.midX, y: top.view.bounds.midY, width: 0, height: 0)
             pop.permittedArrowDirections = []
         }
         top.present(vc, animated: true)
+    }
+}
+
+// 半屏弹窗档位（Campbell 2026-11-06 定：数据管理页的
+// 恢复/备份选择弹窗弹得太高）：内容先以半屏（.medium）
+// 呈现、带抓手条、可上拖到全屏（.large）；内容是 List
+// 时半屏内照常滑动（他特意嘱咐的）。presentationDetents
+// 是 iOS 16 API，部署目标 15 用 #available 兜住，低版
+// 本维持系统默认整页。
+struct CZFHalfSheetDetents: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(iOS 16.0, *) {
+            content
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
+        } else {
+            content
+        }
     }
 }
 

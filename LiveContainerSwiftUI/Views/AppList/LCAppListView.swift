@@ -372,11 +372,12 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
                         }
                     } else {
                         // 单文件版（无内置 SideStore）：原「?」帮助按钮换成
-                        // 与签名相同的图标，点击直接跳到 Sidekite 应用
+                        // 与签名相同的图标，点击跳转到安装器应用。
+                        // 跳转顺序（Campbell 2026-11-06 追加）：优先
+                        // Sidekite，没装/跳失败自动落到 Seal，再没有
+                        // 落到 SideInstaller（见 czfOpenInstallerApp）。
                         Button {
-                            if let url = URL(string: "sidekite://") {
-                                UIApplication.shared.open(url)
-                            }
+                            czfOpenInstallerApp()
                         } label: {
                             Label("Sidekite", systemImage: "signature")
                         }
@@ -1413,6 +1414,29 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
         var lines = ["\(name)（版本 \(version)）", "Bundle ID：\(bundleId)", "大小：\(sizeText)"]
         lines.append(perms.isEmpty ? "声明的权限：无特殊权限" : "声明的权限：\(perms.joined(separator: "、"))")
         return lines.joined(separator: "\n")
+    }
+
+    // 应用页左上角安装器跳转（Campbell 2026-11-06 追加，单
+    // 文件版分支专用）：按优先级逐个试跳，某个跳失败（没装
+    // 那个 App）就自动落到下一个：Sidekite（sidekite://）→
+    // Seal（sidestore://；Seal 的 scheme 按用户定的用
+    // sidestore，不自创 seal://）→ SideInstaller
+    // （sideinstaller://）。判失败靠 open 的完成回调
+    // success=false（没人接这个 scheme 就是没装，和设置页
+    // openInstall 判「没能打开」是同一套）；三个都失败就停
+    // 在原地，不额外弹窗（与旧版没装 Sidekite 时点了没反
+    // 应一致）。
+    private func czfOpenInstallerApp() {
+        czfTryOpenInstallerApp(schemes: ["sidekite", "sidestore", "sideinstaller"], index: 0)
+    }
+
+    private func czfTryOpenInstallerApp(schemes: [String], index: Int) {
+        guard index < schemes.count, let url = URL(string: "\(schemes[index])://") else { return }
+        UIApplication.shared.open(url, options: [:]) { success in
+            if !success {
+                czfTryOpenInstallerApp(schemes: schemes, index: index + 1)
+            }
+        }
     }
 
     /// 返回是否装成功：批量队列靠它分开统计成功/失败（原来

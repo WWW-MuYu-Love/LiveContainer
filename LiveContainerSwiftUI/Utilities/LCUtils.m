@@ -451,6 +451,17 @@
     return tmpIPAPath;
 }
 
++ (NSData *)czfZippedDataForURL:(NSURL *)url {
+    // PKZipArchiver 在 PassKitCore 私有框架里，与
+    // archiveIPAWithBundleName 内部同款取法：先 dlopen
+    // 再按名字取类。取不到类返回 nil，调用方按打包失败
+    // 处理。
+    dlopen("/System/Library/PrivateFrameworks/PassKitCore.framework/PassKitCore", RTLD_GLOBAL);
+    Class cls = NSClassFromString(@"PKZipArchiver");
+    if (!cls) return nil;
+    return [[cls new] zippedDataForURL:url];
+}
+
 + (NSString *)getVersionInfo {
     return [NSString stringWithFormat:@"Version %@-%@ 解剖自我 🅥修改版",
             NSBundle.mainBundle.infoDictionary[@"CFBundleShortVersionString"],

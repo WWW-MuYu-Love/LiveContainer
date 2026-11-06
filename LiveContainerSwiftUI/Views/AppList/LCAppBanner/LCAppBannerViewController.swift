@@ -44,7 +44,7 @@ final class LCAppBannerViewController: UIViewController, UIContextMenuInteractio
     // 的行收到就收回（正在拖的那行除外）。
     static let czfCloseSwipeNotification = Notification.Name("CZFCloseOpenBannerSwipe")
     // 左滑尾钮的业务形态：普通 App 是卸载；开了分享的
-    // App 不显示卸载，换成蓝色的「分享」开关钮（点按=
+    // App 不显示卸载，换成蓝色的「共享」开关钮（点按=
     // 取消分享，与设置页同款逻辑；LC2 形态下设置页不给
     // 取消分享，这里同样不出钮）。
     private enum TrailingSwipeKind { case uninstall, unshare, none }
@@ -222,10 +222,10 @@ final class LCAppBannerViewController: UIViewController, UIContextMenuInteractio
         case .uninstall:
             trailingSwipeButton.configure(symbol: "trash.fill", title: "卸载", color: .systemRed)
         case .unshare:
-            // 分享开关钮（用户定）：文字只写「分享」，开了
+            // 共享开关钮（用户定，2026-11-06 改名）：文字只写「共享」，开了
             // 分享才是蓝色（关着的 VPN 钮灰色同理）；这颗
             // 只在已分享时出现，此时不显示卸载。
-            trailingSwipeButton.configure(symbol: "person.2.fill", title: "分享", color: .systemBlue)
+            trailingSwipeButton.configure(symbol: "person.2.fill", title: "共享", color: .systemBlue)
         case .none:
             break
         }
@@ -605,12 +605,14 @@ final class LCAppBannerViewController: UIViewController, UIContextMenuInteractio
     }
 
     // MARK: - 长按系统菜单（用户定版）
-    // 删：多任务、用 VPN 打开、卸载；设置置顶，数据文件夹
-    // 改名放第二，之后模块文件夹、添加到主屏幕。原来头部
-    // 有一行分区标题「名称 · Bundle ID」，用户后来拍板去
-    // 掉（卡片上就有名字，不用在菜单里再写一遍）；并且每
-    // 一栏各自独立成组——系统在组与组之间画分隔线，于是
-    // 像备份下面那条一样，每一栏下面都有横线。
+    // 2026-11-06 曾按令换成自制半屏 sheet，同日用户令
+    // 改回系统菜单，本节即系统 UIMenu。前四行顺序为
+    // 同日定版：设置、备份、恢复备份、导出应用；之后
+    // 依次是容器切换（多容器才有）、数据文件夹、模块
+    // 文件夹、添加到主屏幕。每一栏各自独立成组——系
+    // 统在组与组之间画分隔线，于是每一栏下面都有横
+    // 线。头部不带名称/Bundle ID 行（用户早先拍板去
+    // 掉，卡片上就有名字，不用在菜单里再写一遍）。
 
     private func makeContextMenu() -> UIMenu {
         let model = configuration.model
@@ -622,12 +624,35 @@ final class LCAppBannerViewController: UIViewController, UIContextMenuInteractio
             UIMenu(title: "", options: .displayInline, children: [element])
         }
 
-        // 备份放整个菜单第一位（用户定：从左滑挪过来）
+        menuChildren.append(rowGroup(UIAction(
+            title: "lc.tabView.settings".loc,
+            image: UIImage(systemName: "gear")
+        ) { [weak self] _ in
+            self?.openSettings()
+        }))
+
         menuChildren.append(rowGroup(UIAction(
             title: "备份",
             image: UIImage(systemName: "tray.and.arrow.down.fill")
         ) { [weak self] _ in
             self?.backupApp()
+        }))
+
+        menuChildren.append(rowGroup(UIAction(
+            title: "恢复备份",
+            image: UIImage(systemName: "tray.and.arrow.up.fill")
+        ) { [weak self] _ in
+            self?.restoreBackup()
+        }))
+
+        // 导出应用（2026-11-06 由「分享IPA」改名）：把当
+        // 前 App 打包成 IPA 弹分享表递出去；注意与横滑那
+        // 颗「共享」钮不是一回事（那是 App 共享开关）。
+        menuChildren.append(rowGroup(UIAction(
+            title: "导出应用",
+            image: UIImage(systemName: "square.and.arrow.up")
+        ) { [weak self] _ in
+            self?.exportAppIPA()
         }))
 
         // Containers Picker（多容器才出现，原样保留）
@@ -648,13 +673,6 @@ final class LCAppBannerViewController: UIViewController, UIContextMenuInteractio
             }
             menuChildren.append(UIMenu(title: "Containers", options: .displayInline, children: containerActions))
         }
-
-        menuChildren.append(rowGroup(UIAction(
-            title: "lc.tabView.settings".loc,
-            image: UIImage(systemName: "gear")
-        ) { [weak self] _ in
-            self?.openSettings()
-        }))
 
         if !model.uiIsShared, model.uiSelectedContainer != nil {
             menuChildren.append(rowGroup(UIAction(
@@ -1032,6 +1050,115 @@ final class LCAppBannerViewController: UIViewController, UIContextMenuInteractio
         }
     }
 
+    // 恢复备份（2026-11-06 新增）：找这个 App 在本地备
+    // 份目录（Documents/Backups，与「备份」行同一位置）
+    // 里的备份文件夹，没有就直接提示还没备份；有就先让
+    // 用户选恢复范围（与数据管理恢复弹窗同两档：只恢复
+    // 登录态不动现有数据 / 恢复全部数据会覆盖当前数
+    // 据），选完走数据管理同一套 restoreOneApp，完事报
+    // 结果。外部文件夹（iCloud）里的备份不在这找，仍
+    // 去数据管理页恢复。
+    private func restoreBackup() {
+        let app = configuration.model
+        let name = app.displayName
+        let fm = FileManager.default
+        guard let docs = fm.urls(for: .documentDirectory, in: .userDomainMask).first else {
+            showInfo("「\(name)」恢复备份失败：找不到文档目录")
+            return
+        }
+        let root = docs.appendingPathComponent("Backups")
+        let folderName = LCDataManagementView.backupFolderName(for: app, backupRoot: root, fm: fm)
+        let folder = root.appendingPathComponent(folderName)
+        var isDir: ObjCBool = false
+        guard fm.fileExists(atPath: folder.path, isDirectory: &isDir), isDir.boolValue,
+              LCDataManagementView.isValidBackupFolder(folder) else {
+            showInfo("「\(name)」还没有备份，先用上面的「备份」备一份")
+            return
+        }
+        guard viewIfLoaded?.window != nil, presentedViewController == nil else { return }
+        let alert = UIAlertController(title: "恢复「\(name)」的备份", message: "只恢复登录态：只写回登录，现有数据不动。\n恢复全部数据：会覆盖当前数据。", preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "只恢复登录态", style: .default) { [weak self] _ in
+            self?.runRestoreBackup(app: app, name: name, folder: folder, loginOnly: true)
+        })
+        alert.addAction(UIAlertAction(title: "恢复全部数据", style: .destructive) { [weak self] _ in
+            self?.runRestoreBackup(app: app, name: name, folder: folder, loginOnly: false)
+        })
+        alert.addAction(UIAlertAction(title: "lc.common.cancel".loc, style: .cancel))
+        present(alert, animated: true)
+    }
+
+    private func runRestoreBackup(app: LCAppModel, name: String, folder: URL, loginOnly: Bool) {
+        Task { [weak self] in
+            do {
+                let outcome = try await LCDataManagementView.restoreOneApp(appFolder: folder, app: app, loginOnly: loginOnly)
+                let message: String
+                if outcome.ok {
+                    var text = "「\(name)」已恢复备份：钥匙串写回 \(outcome.keychainImported) 条"
+                    if outcome.keychainQueued > 0 {
+                        text += "，另有 \(outcome.keychainQueued) 条已排队，下次打开该 App 时写回"
+                    }
+                    message = text
+                } else {
+                    message = "「\(name)」没有恢复出数据（备份里数据容器 \(outcome.containerFolderCount) 个，合并登录文件 \(outcome.mergedLoginFiles) 个，钥匙串找到 \(outcome.keychainFound) 条）"
+                }
+                DispatchQueue.main.async {
+                    self?.showInfo(message)
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    self?.showInfo("「\(name)」恢复备份失败：\(LCUtils.czfFriendlyError(error))")
+                }
+            }
+        }
+    }
+
+    // 导出当前 App 的 IPA 包（Campbell 2026-11-06 追加、
+    // 同日菜单行由「分享IPA」改名「导出应用」）：
+    // 把已安装的 .app 本体原样复制进 Payload/ 再压成
+    // IPA（经 LCUtils.czfZippedData 走 PassKitCore 的
+    // PKZipArchiver，与多开管理打包 LC 本体同一个打包
+    // 器、同一套 Payload 在根的布局；那个类是私有类，
+    // Swift 里不能直接引用），不重签、不改包——装回去
+    // 时 LC 照常走它自己的签名流程。打包放后台队列，
+    // 完事弹系统分享表递文件；分享结束删临时 IPA（工
+    // 作目录打包完即删），失败弹原因。
+    private func exportAppIPA() {
+        let app = configuration.model
+        let name = app.displayName
+        let bundlePath = app.appInfo.bundlePath()
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let fm = FileManager.default
+            do {
+                guard let bundlePath = bundlePath, !bundlePath.isEmpty else {
+                    throw NSError(domain: "CZFShareIPA", code: -1, userInfo: [NSLocalizedDescriptionKey: "找不到这个 App 的包路径"])
+                }
+                let src = URL(fileURLWithPath: bundlePath)
+                let work = fm.temporaryDirectory.appendingPathComponent("CZFShareIPA-\(UUID().uuidString)")
+                let payload = work.appendingPathComponent("Payload", isDirectory: true)
+                try fm.createDirectory(at: payload, withIntermediateDirectories: true)
+                try fm.copyItem(at: src, to: payload.appendingPathComponent(src.lastPathComponent))
+                guard let zipData = LCUtils.czfZippedData(forURL: work) else {
+                    try? fm.removeItem(at: work)
+                    throw NSError(domain: "CZFShareIPA", code: -2, userInfo: [NSLocalizedDescriptionKey: "打包失败"])
+                }
+                try? fm.removeItem(at: work)
+                let safeName = name.replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: ":", with: "_")
+                let ipaURL = fm.temporaryDirectory.appendingPathComponent("\(safeName.isEmpty ? "App" : safeName).ipa")
+                try? fm.removeItem(at: ipaURL)
+                try zipData.write(to: ipaURL)
+                DispatchQueue.main.async {
+                    czfPresentActivitySheet(items: [ipaURL]) {
+                        try? FileManager.default.removeItem(at: ipaURL)
+                    }
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    self?.showInfo("「\(name)」导出应用失败：\(LCUtils.czfFriendlyError(error))")
+                }
+            }
+        }
+    }
+
     private func showInfo(_ message: String) {
         guard viewIfLoaded?.window != nil, presentedViewController == nil else { return }
         let alert = UIAlertController(title: nil, message: message, preferredStyle: .alert)
@@ -1326,3 +1453,4 @@ final class LCBannerSwipeButton: UIControl {
         }
     }
 }
+
