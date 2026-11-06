@@ -16,12 +16,6 @@ public final class DownloadHelper : ObservableObject {
     // 面板显示用，下载弹窗/胶囊不显示名字、保持原样。
     @Published var currentDownloadName: String = ""
     @Published var cancelled = false
-    // 下载弹窗是否被用户收起（收起后留一个小悬浮钮，下载继续、
-    // 界面可以正常操作别的功能，点悬浮钮把弹窗调回来）
-    @Published var minimized = false
-    // 批量安装期间为 true：新下载不把弹窗重新弹出来，
-    // 保持用户上次的收起/展开状态
-    var batchMode = false
     // 进度发布节流用：上次发布进度的时间
     private var lastProgressPublish = Date.distantPast
     private var downloadTask: URLSessionDownloadTask?
@@ -69,9 +63,6 @@ public final class DownloadHelper : ObservableObject {
 
         await MainActor.run {
             cancelled = false
-            if !batchMode {
-                minimized = false
-            }
             currentDownloadName = url.lastPathComponent
 
             downloadProgress = 0.0
@@ -178,136 +169,6 @@ public final class DownloadHelper : ObservableObject {
     }
 }
 
-// 下载量格式化：弹窗与收起胶囊共用（原来是 DownloadAlert 的
-// 私有方法，胶囊在另一个 View 里用不上，提到文件级）。
-fileprivate func formatBytes(_ bytes: Int64) -> String {
-    let formatter = ByteCountFormatter()
-    formatter.allowedUnits = [.useKB, .useMB, .useGB] // Allow KB, MB, and GB
-    formatter.countStyle = .file
-    return formatter.string(fromByteCount: bytes)
-}
-
-struct DownloadAlert : View {
-    @StateObject var helper : DownloadHelper
-    var body: some View {
-        
-        Color.black.opacity(0.2) // Semi-transparent grey background
-            .edgesIgnoringSafeArea(.all) // Covers entire screen
-        
-        VStack {
-            Text("lc.download.downloading".loc)
-                .font(.headline)
-                .padding(.top)
-            
-            // 总长度未知（服务器不发长度）时不用定值进度条，
-            // 也不显示“-1”总大小：进度条改不确定样式，只显已下载量。
-            if helper.totalSize > 0 {
-                ProgressView(value: helper.downloadProgress, total: 1)
-                    .padding()
-            } else {
-                ProgressView()
-                    .padding()
-            }
-            
-            if helper.totalSize > 0 {
-                Text("\(formatBytes(helper.downloadedSize)) / \(formatBytes(helper.totalSize))")
-                    .font(.subheadline)
-                    .padding(.bottom)
-            } else {
-                Text("已下载 \(formatBytes(helper.downloadedSize))")
-                    .font(.subheadline)
-                    .padding(.bottom)
-            }
-
-            // 按钮与收起态胶囊、全 App 的胶囊按钮同一套语言：
-            // 以前是纯文字钮，混在材质卡上像没做完
-            HStack(spacing: 12) {
-                Button(action: { helper.minimized = true }) {
-                    Text("隐藏")
-                        .font(.subheadline.weight(.medium))
-                        .padding(.horizontal, 22)
-                        .padding(.vertical, 8)
-                        .background(Color.accentColor.opacity(0.12), in: Capsule())
-                        .foregroundColor(.accentColor)
-                }
-                Button(action: cancelDownload) {
-                    Text("lc.common.cancel".loc)
-                        .font(.subheadline.weight(.medium))
-                        .padding(.horizontal, 22)
-                        .padding(.vertical, 8)
-                        .background(Color.red.opacity(0.12), in: Capsule())
-                        .foregroundColor(.red)
-                }
-            }
-            .padding(.bottom)
-        }
-        .frame(width: 320)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
-        .shadow(color: .black.opacity(0.15), radius: 16, x: 0, y: 8)
-        .padding()
-    }
-    
-    
-    func cancelDownload() {
-        helper.cancel()
-    }
-}
-
-public struct DownloadAlertModifier: ViewModifier {
-    @ObservedObject var helper : DownloadHelper
-    @State var show = false
-    
-    public func body(content: Content) -> some View {
-
-        ZStack {
-            content
-            if show && !helper.minimized {
-                DownloadAlert(helper: helper)
-            }
-            if show && helper.minimized {
-                // 收起后的小悬浮钮：只占右下角一小块，不挡界面
-                // 操作；显示进度，点一下把下载弹窗调回来
-                VStack {
-                    Spacer()
-                    HStack {
-                        Spacer()
-                        Button {
-                            helper.minimized = false
-                        } label: {
-                            HStack(spacing: 6) {
-                                // 总长度未知时不显示百分比，只显已下载量。
-                                if helper.totalSize > 0 {
-                                    ProgressView(value: helper.downloadProgress, total: 1)
-                                        .progressViewStyle(.circular)
-                                    Text("下载中 \(Int(helper.downloadProgress * 100))%")
-                                        .font(.caption.bold())
-                                } else {
-                                    ProgressView()
-                                        .progressViewStyle(.circular)
-                                    Text("下载中 \(formatBytes(helper.downloadedSize))")
-                                        .font(.caption.bold())
-                                }
-                            }
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 8)
-                            .background(.ultraThinMaterial, in: Capsule())
-                            .shadow(radius: 4)
-                        }
-                        .padding(.trailing, 16)
-                        .padding(.bottom, 100)
-                    }
-                }
-            }
-
-        }
-        .onChange(of: helper.isDownloading) { newVal in
-            withAnimation(.easeInOut(duration: 0.1)) {
-                show = newVal
-            }
-        }
-    }
-}
-
 class DownloadDelegate: NSObject, URLSessionDownloadDelegate {
     let progressCallback: (Float, Int64, Int64) -> Void
     let completeCallback: (URL?, Error?) -> Void
@@ -369,8 +230,3 @@ class DownloadDelegate: NSObject, URLSessionDownloadDelegate {
     }
 }
 
-extension View {
-    public func downloadAlert(helper: DownloadHelper) -> some View {
-        self.modifier(DownloadAlertModifier(helper: helper))
-    }
-}

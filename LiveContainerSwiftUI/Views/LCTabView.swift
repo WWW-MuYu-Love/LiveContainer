@@ -70,7 +70,6 @@ struct LCTabView: View {
                 CZFVPNManager.shared.prewarmIfNeeded()
             }
         }
-        .downloadAlert(helper: downloadHelper)
         .environmentObject(downloadHelper)
         .alert("lc.common.error".loc, isPresented: $errorShow){
             Button("lc.common.ok".loc, action: {

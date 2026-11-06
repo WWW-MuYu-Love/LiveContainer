@@ -1415,11 +1415,6 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
                 while installprogressVisible {
                     try? await Task.sleep(nanoseconds: 1_000_000_000)
                 }
-                if batch {
-                    // 批量期间下载弹窗保持用户上次的收起状态，
-                    // 不然每个 App 都弹一次出来
-                    downloadHelper.batchMode = true
-                }
                 // 本轮装哪个地址：有预下载好的就用本地文件
                 var installStr = item.url.absoluteString
                 var prefetchFile: URL? = nil
@@ -1457,7 +1452,6 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
                 installQueueDone = processed
                 prefetched = await prefetchTask?.value ?? nil
             }
-            downloadHelper.batchMode = false
             installQueueRunning = false
             if processed > 1 {
                 // 汇总分开报成功/失败并点名失败的：原来只报总数，
