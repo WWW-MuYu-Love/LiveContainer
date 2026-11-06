@@ -322,6 +322,11 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
                 }
 
             }
+            // 页面背景与源页同款（Campbell 定）：源页是分组
+            // List，自带系统分组灰底；应用页是 ScrollView、
+            // 默认白底，这里给同一个灰，两个页面底色一致。
+            // 只改页面底色，应用行卡片自身的背景不动。
+            .background(Color(.systemGroupedBackground))
             // 点列表任何其他位置、或开始滚动：把滑开着的
             // 应用行按钮收回（用户定，横幅行监听此通知）
             .simultaneousGesture(TapGesture().onEnded {
