@@ -71,6 +71,16 @@ struct CZFSearchNavBarProbe: UIViewRepresentable {
             czfApply()
         }
 
+        // 搜索控制器统一处理：不隐藏导航栏 + 搜索框背景
+        // 设为 minimal（去掉搜索条自己的底色填充，透出导
+        // 航栏材质，和页面滑动时顶栏的样式一致）。
+        func czfFixSearchController(_ sc: UISearchController) {
+            sc.hidesNavigationBarDuringPresentation = false
+            if sc.searchBar.searchBarStyle != .minimal {
+                sc.searchBar.searchBarStyle = .minimal
+            }
+        }
+
         func czfApply() {
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
@@ -78,12 +88,20 @@ struct CZFSearchNavBarProbe: UIViewRepresentable {
                 while let r = responder {
                     if let vc = r as? UIViewController {
                         if let sc = vc.navigationItem.searchController {
-                            sc.hidesNavigationBarDuringPresentation = false
+                            czfFixSearchController(sc)
                         }
                         if let nav = vc.navigationController {
+                            // 导航栏外观统一（Campbell 定）：点搜索
+                            // 框时的样子要和页面滑动时一样——把贴顶
+                            // 的透明外观换成滑动时的标准外观，静止/
+                            // 滑动/搜索三种状态就都是同一个样式。
+                            let bar = nav.navigationBar
+                            if bar.scrollEdgeAppearance != bar.standardAppearance {
+                                bar.scrollEdgeAppearance = bar.standardAppearance
+                            }
                             for child in nav.viewControllers {
                                 if let sc = child.navigationItem.searchController {
-                                    sc.hidesNavigationBarDuringPresentation = false
+                                    czfFixSearchController(sc)
                                 }
                             }
                         }
