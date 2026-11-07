@@ -743,6 +743,40 @@ final class LCAppBannerViewController: UIViewController, UIContextMenuInteractio
         }
     }
 
+    // 长按菜单的预览落点显式给定（升起/落下各一份）：卡片
+    // 是嵌在 SwiftUI 列表里的 UIKit 控制器，预览落点交给
+    // 系统自己推算会串到上一行（长按 YouTube、卡片叠到
+    // Feather 行上，3.8.22 实测，换 VStack 没治好）；这里
+    // 把容器和中心点钉死在卡片本人身上，不让它推算。
+    private func czfBannerTargetedPreview() -> UITargetedPreview? {
+        guard let container = bannerView.superview else { return nil }
+        let params = UIPreviewParameters()
+        params.backgroundColor = .clear
+        params.visiblePath = UIBezierPath(
+            roundedRect: bannerView.bounds,
+            cornerRadius: 22
+        )
+        return UITargetedPreview(
+            view: bannerView,
+            parameters: params,
+            target: UIPreviewTarget(container: container, center: bannerView.center)
+        )
+    }
+
+    func contextMenuInteraction(
+        _ interaction: UIContextMenuInteraction,
+        previewForHighlightingContextMenuWithConfiguration configuration: UIContextMenuConfiguration
+    ) -> UITargetedPreview? {
+        czfBannerTargetedPreview()
+    }
+
+    func contextMenuInteraction(
+        _ interaction: UIContextMenuInteraction,
+        previewForDismissingContextMenuWithConfiguration configuration: UIContextMenuConfiguration
+    ) -> UITargetedPreview? {
+        czfBannerTargetedPreview()
+    }
+
     // MARK: - 横滑操作（左滑尾钮、右滑 VPN）
 
     // 两侧各一颗钮，单颗宽 70（系统列表口径）；尾钮无
