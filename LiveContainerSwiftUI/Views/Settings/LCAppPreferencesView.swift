@@ -162,7 +162,6 @@ struct LCAppPreferencesView: View {
             if czfPrefsSearchVisible("多开 分身 管理 multi 第二个") { multiLCSection }
             if czfPrefsSearchVisible("多任务 multitask 窗口 缩放 比例") { multitaskSection }
             if czfPrefsSearchVisible("保活 后台 无声音频 音频") { keepAliveSection }
-            if sharedModel.multiLCStatus != 2, czfPrefsSearchVisible("代理 代理设置 vpn 节点 订阅 核心 线路") { proxySection }
         }
         // 搜索栏与框架和源页同款（Campbell 定）：段间距
         // 10、搜索栏导航栏下方常显。
@@ -273,24 +272,6 @@ struct LCAppPreferencesView: View {
             .onAppear {
                 LCSettingsView.syncKeepAliveTweak(enabled: keepAliveEnabled, forceSign: false)
                 CZFHostKeepAlive.shared.refresh()
-            }
-        }
-    }
-
-    @ViewBuilder private var proxySection: some View {
-        // 代理设置（Campbell 定：代理页从底部标签栏移回
-        // 设置，挂应用设置最下方）：点进就是原 LCVPNView
-        // （状态卡/节点分组/核心选项原样），标题「代理设置」。
-        // 出现条件在 body 的调用处：多开副容器不显示，
-        // 与原标签页时期的隐藏规则一致。
-        Section {
-            NavigationLink {
-                LCVPNView()
-            } label: {
-                HStack {
-                    LCSettingsIcon(systemName: "network", color: .blue)
-                    Text("代理设置")
-                }
             }
         }
     }

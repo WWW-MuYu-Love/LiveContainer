@@ -129,7 +129,8 @@ struct LCSettingsView: View {
                 if czfSettingsSearchVisible("jit 证书 导入证书 删除证书 刷新证书 诊断 无jit jitless") { jitLessSection }
                 if czfSettingsSearchVisible("jit 地址 udid 启用器 sidejitserver stikdebug sidestore") { jitSection }
                 if czfSettingsSearchVisible("32 模拟器 emulator 翻译层 32位") { emulatorSection }
-                if czfSettingsSearchVisible("应用设置 多任务 多开 保活 外观 界面 动态取色 深色图标 静默 通知 边框 快捷栏 窗口 缩放 比例 后台 分身 代理 代理设置 vpn") { miscSection }
+                if czfSettingsSearchVisible("应用设置 多任务 多开 保活 外观 界面 动态取色 深色图标 静默 通知 边框 快捷栏 窗口 缩放 比例 后台 分身") { miscSection }
+                if sharedModel.multiLCStatus != 2, czfSettingsSearchVisible("代理 代理设置 vpn 节点 订阅 核心 线路") { proxySection }
                 if czfSettingsSearchVisible("存储管理 数据管理 储存 备份 清理") { storageSection }
                 if czfSettingsSearchVisible("关于 github twitter 作者 livecontainer") { aboutSection }
                 if czfSettingsSearchVisible("更新 版本 检查更新 update") { updateSection }
@@ -345,6 +346,24 @@ struct LCSettingsView: View {
                 HStack {
                     LCSettingsIcon(systemName: "apps.iphone", color: .indigo)
                     Text("应用设置")
+                }
+            }
+        }
+    }
+
+    @ViewBuilder private var proxySection: some View {
+        // 代理设置（Campbell 定）：不在应用设置页里面，
+        // 是设置主页上紧挨「应用设置」入口下方的一行，
+        // 点进就是原 LCVPNView（状态卡/节点分组/核心
+        // 选项原样），标题「代理设置」。多开副容器不
+        // 显示（调用处已 gate），与原标签页时期一致。
+        Section {
+            NavigationLink {
+                LCVPNView()
+            } label: {
+                HStack {
+                    LCSettingsIcon(systemName: "network", color: .blue)
+                    Text("代理设置")
                 }
             }
         }
