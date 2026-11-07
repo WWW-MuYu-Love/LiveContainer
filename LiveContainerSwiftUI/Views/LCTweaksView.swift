@@ -613,13 +613,20 @@ struct LCTweaksView: View {
     var body: some View {
         NavigationView {
             VStack(spacing: 0) {
+                // 分段按钮保留（Campbell 定），位置样式跟搜索
+                // 框对齐：左右留白与搜索框同为 16、上沿贴着搜
+                // 索框那一条、背景同用导航栏的 bar 材质，让按
+                // 钮带和搜索框看着是连成一体的同一条。
                 Picker("", selection: $showShared) {
                     Text("本机").tag(false)
                     Text("共享").tag(true)
                 }
                 .pickerStyle(.segmented)
-                .padding(.horizontal)
-                .padding(.vertical, 8)
+                .padding(.horizontal, 16)
+                .padding(.top, 2)
+                .padding(.bottom, 8)
+                .frame(maxWidth: .infinity)
+                .background(.bar)
                 LCTweakFolderView(baseUrl: showShared ? LCPath.lcGroupTweakPath : LCPath.tweakPath, isRoot: true, searchContext: searchContext)
                     .id(showShared)
             }
