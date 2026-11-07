@@ -167,6 +167,7 @@ struct LCAppPreferencesView: View {
         // 10、搜索栏导航栏下方常显。
         .czfListSectionSpacing(10)
         .navigationTitle("应用设置")
+        .navigationBarTitleDisplayMode(.inline)
         .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .always), prompt: "搜索设置")
         .czfKeepNavBarDuringSearch()
     }

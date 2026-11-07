@@ -671,6 +671,7 @@ struct LCSourcesView: View {
                 }
             }
             .navigationTitle("lc.tabView.sources".loc)
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     if viewModel.isRefreshingAll {

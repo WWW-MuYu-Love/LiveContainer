@@ -131,6 +131,7 @@ struct LCEdgeGestureSettingView: View {
         // 用的是默认自动收起，一并对齐）。
         .czfListSectionSpacing(10)
         .navigationTitle("手势控制")
+        .navigationBarTitleDisplayMode(.inline)
         .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .always), prompt: "搜索设置")
         .czfKeepNavBarDuringSearch()
     }

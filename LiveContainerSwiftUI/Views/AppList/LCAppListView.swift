@@ -74,12 +74,29 @@ struct CZFSearchNavBarProbe: UIViewRepresentable {
 
     final class ProbeView: UIView {
         private var timer: Timer?
+        private var skinnedControllers: Set<ObjectIdentifier> = []
         private var observations: [ObjectIdentifier: NSKeyValueObservation] = [:]
         private var observedBoxes: [ObjectIdentifier: WeakSC] = [:]
 
         private final class WeakSC {
             weak var value: UISearchController?
         }
+
+        // 玻璃搜索框底图：半透明白 + 细边、圆角胶囊，可拉伸
+        static let glassFieldImage: UIImage = {
+            let size = CGSize(width: 40, height: 40)
+            let renderer = UIGraphicsImageRenderer(size: size)
+            let img = renderer.image { _ in
+                let rect = CGRect(origin: .zero, size: size).insetBy(dx: 0.5, dy: 0.5)
+                let path = UIBezierPath(roundedRect: rect, cornerRadius: 19)
+                UIColor(white: 1, alpha: 0.6).setFill()
+                path.fill()
+                UIColor(white: 0, alpha: 0.10).setStroke()
+                path.lineWidth = 1
+                path.stroke()
+            }
+            return img.resizableImage(withCapInsets: UIEdgeInsets(top: 19, left: 19, bottom: 19, right: 19))
+        }()
 
         override func didMoveToWindow() {
             super.didMoveToWindow()
@@ -111,7 +128,7 @@ struct CZFSearchNavBarProbe: UIViewRepresentable {
         // 找到一个搜索控制器就把开关压回 false，并挂 KVO
         // 长期盯住：SwiftUI 在搜索激活前后可能把开关重置
         // 成 true，KVO 一发现立刻压回。
-        func czfFixSearchController(_ sc: UISearchController) {
+        func czfFixSearchController(_ sc: UISearchController, hostView: UIView?) {
             if sc.hidesNavigationBarDuringPresentation {
                 sc.hidesNavigationBarDuringPresentation = false
             }
@@ -126,6 +143,35 @@ struct CZFSearchNavBarProbe: UIViewRepresentable {
                     }
                 }
             }
+            // 玻璃搜索框：点开搜索、或页面滑动时才盖玻璃底
+            // 图（静止时不碰——应用页静止本来就是玻璃，盖了
+            // 反而毁掉）；回到顶部且没在搜就撤下，恢复默认。
+            if sc.isActive || Self.czfIsScrolled(hostView) {
+                sc.searchBar.setSearchFieldBackgroundImage(Self.glassFieldImage, for: .normal)
+                skinnedControllers.insert(key)
+            } else if skinnedControllers.contains(key) {
+                sc.searchBar.setSearchFieldBackgroundImage(nil, for: .normal)
+                skinnedControllers.remove(key)
+            }
+        }
+
+        // 页面是否已滑离顶部：找宿主里第一个够高的滚动视图看偏移
+        static func czfIsScrolled(_ view: UIView?) -> Bool {
+            guard let view = view,
+                  let sv = czfFirstScrollView(in: view) else { return false }
+            return sv.contentOffset.y > -sv.adjustedContentInset.top + 1
+        }
+
+        private static func czfFirstScrollView(in view: UIView) -> UIScrollView? {
+            for sub in view.subviews {
+                if let sv = sub as? UIScrollView, sv.bounds.height > 200 {
+                    return sv
+                }
+                if let found = czfFirstScrollView(in: sub) {
+                    return found
+                }
+            }
+            return nil
         }
 
         func czfEnforceAll() {
@@ -133,12 +179,21 @@ struct CZFSearchNavBarProbe: UIViewRepresentable {
             while let r = responder {
                 if let vc = r as? UIViewController {
                     if let sc = vc.navigationItem.searchController {
-                        czfFixSearchController(sc)
+                        czfFixSearchController(sc, hostView: vc.viewIfLoaded)
                     }
                     if let nav = vc.navigationController {
+                        // 滑动/搜索时顶栏也用贴顶的透明外观：不
+                        // 冒实底横带，卡片透过胶囊和搜索框，和
+                        // 静止时一个样。
+                        let bar = nav.navigationBar
+                        if let edge = bar.scrollEdgeAppearance {
+                            if bar.standardAppearance !== edge { bar.standardAppearance = edge }
+                            if bar.compactAppearance !== edge { bar.compactAppearance = edge }
+                            if bar.compactScrollEdgeAppearance !== edge { bar.compactScrollEdgeAppearance = edge }
+                        }
                         for child in nav.viewControllers {
                             if let sc = child.navigationItem.searchController {
-                                czfFixSearchController(sc)
+                                czfFixSearchController(sc, hostView: child.viewIfLoaded)
                             }
                         }
                     }
@@ -150,6 +205,7 @@ struct CZFSearchNavBarProbe: UIViewRepresentable {
             for key in deadKeys {
                 observations[key] = nil
                 observedBoxes[key] = nil
+                skinnedControllers.remove(key)
             }
         }
     }
@@ -475,6 +531,7 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
             }
             
             .navigationTitle("lc.appList.myApps".loc)
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     if sharedModel.multiLCStatus != 2 {
