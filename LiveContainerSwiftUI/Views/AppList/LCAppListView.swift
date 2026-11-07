@@ -351,7 +351,17 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     if sharedModel.multiLCStatus != 2 {
-                        if !installprogressVisible {
+                        // 有传输在进行时（Campbell 定）：点加号跳过
+                        // 菜单、直接打开传输进度。原来这里在安装
+                        // 期间把加号换成一个转圈，加号等于点不了，
+                        // 一并改掉。
+                        if downloadHelper.isDownloading || installprogressVisible || installQueueRunning || !pendingInstalls.isEmpty {
+                            Button {
+                                transferProgressShow = true
+                            } label: {
+                                Label("add", systemImage: "plus")
+                            }
+                        } else {
                             Menu {
                                 
                                 Button("lc.appList.installFromIpa".loc, systemImage: "doc.badge.plus", action: {
@@ -368,8 +378,6 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
                                 Label("add", systemImage: "plus")
                             }
                             
-                        } else {
-                            ProgressView().progressViewStyle(.circular).padding(.horizontal, 8)
                         }
                     }
                 }
