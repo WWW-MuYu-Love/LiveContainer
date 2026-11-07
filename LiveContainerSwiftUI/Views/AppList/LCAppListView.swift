@@ -62,8 +62,8 @@ private enum CZFPendingInstall {
 // 一律挂在 NavigationView 里面的内容上（响应链走得
 // 到）；探针在窗口期间每 0.25 秒巡查一次，并用 KVO 盯
 // 住开关，系统随时改回 true 都立刻压回 false；搜索条
-// 样式：没点时保持系统默认（与静止/滑动时同款），点
-// 开后在框下垫一层真玻璃（见 czfFixSearchController）。
+// 样式一律不碰（给激活态加玻璃的两次尝试都翻车，见
+// czfFixSearchController 里的记录）。
 struct CZFSearchNavBarProbe: UIViewRepresentable {
     func makeUIView(context: Context) -> UIView {
         ProbeView()
@@ -75,49 +75,11 @@ struct CZFSearchNavBarProbe: UIViewRepresentable {
 
     final class ProbeView: UIView {
         private var timer: Timer?
-        private var glassBoxes: [ObjectIdentifier: WeakGlass] = [:]
         private var observations: [ObjectIdentifier: NSKeyValueObservation] = [:]
         private var observedBoxes: [ObjectIdentifier: WeakSC] = [:]
-        private var forcedInlineNavs: [ObjectIdentifier: WeakNav] = [:]
 
         private final class WeakSC {
             weak var value: UISearchController?
-        }
-
-        private final class WeakNav {
-            weak var value: UINavigationController?
-        }
-
-        private final class WeakGlass {
-            weak var value: UIVisualEffectView?
-        }
-
-        // 透明底图：激活时把搜索框自身的底换成全透明，
-        // 让垫在框下面的真玻璃层透出来。
-        static let clearFieldImage: UIImage = {
-            let size = CGSize(width: 2, height: 2)
-            return UIGraphicsImageRenderer(size: size).image { _ in
-                UIColor.clear.setFill()
-                UIRectFill(CGRect(origin: .zero, size: size))
-            }.resizableImage(withCapInsets: UIEdgeInsets(top: 0.5, left: 0.5, bottom: 0.5, right: 0.5))
-        }()
-
-        // 真玻璃层：第一版用半透明底图冒充玻璃——没有模
-        // 糊，背后卡片的字原样透上来和搜索字糊成一团
-        // （Campbell 18:19 实测点名「一言难尽」）。真玻
-        // 璃必须实时模糊背景：iOS 26 用系统液态玻璃
-        // UIGlassEffect，旧系统用超薄材质模糊。
-        static func makeGlassView() -> UIVisualEffectView {
-            let effect: UIVisualEffect
-            if #available(iOS 26.0, *) {
-                effect = UIGlassEffect(style: .regular)
-            } else {
-                effect = UIBlurEffect(style: .systemUltraThinMaterial)
-            }
-            let view = UIVisualEffectView(effect: effect)
-            view.isUserInteractionEnabled = false
-            view.clipsToBounds = true
-            return view
         }
 
         override func didMoveToWindow() {
@@ -147,9 +109,15 @@ struct CZFSearchNavBarProbe: UIViewRepresentable {
             }
         }
 
-        // 找到一个搜索控制器就把开关压回 false，并挂 KVO
-        // 长期盯住：SwiftUI 在搜索激活前后可能把开关重置
-        // 成 true，KVO 一发现立刻压回。
+        // 探针只做这一件事：把 hidesNavigationBarDuringPresentation
+        // 压回 false（+KVO 长期盯住），其余一律不碰——这是
+        // 3.8.22 实测干净的形态。之后两次给激活态搜索框加
+        // 玻璃都翻了车：半透明底图没模糊、背后卡片的字透上
+        // 来糊成一团（3.8.25）；往搜索条内部塞玻璃层把系
+        // 统搜索条的内部布局挤塌，点开后框缩成一条线、标
+        // 题和卡片跟着错位重叠（3.8.26 录屏实测）。搜索条
+        // 内部结构不许再动；标题居中也不再靠巡查期改
+        // prefersLargeTitles（同批录屏里标题反复横跳）。
         func czfFixSearchController(_ sc: UISearchController) {
             if sc.hidesNavigationBarDuringPresentation {
                 sc.hidesNavigationBarDuringPresentation = false
@@ -165,40 +133,9 @@ struct CZFSearchNavBarProbe: UIViewRepresentable {
                     }
                 }
             }
-            // 玻璃搜索框：只在点开搜索后生效——框自身的
-            // 底换全透明，框下面垫一层真玻璃（实时模糊背
-            // 后的内容，字不会透上来）；玻璃层每轮巡查都
-            // 对齐搜索框的帧（取消按钮进出会改框宽）。没
-            // 点时（含滑动后停住）一律 3.8.22 原样，退出
-            // 搜索撤下玻璃、恢复默认（Campbell 定版）。
-            let field = sc.searchBar.searchTextField
-            if sc.isActive {
-                sc.searchBar.setSearchFieldBackgroundImage(Self.clearFieldImage, for: .normal)
-                field.backgroundColor = .clear
-                if let parent = field.superview {
-                    let glass: UIVisualEffectView
-                    if let existing = glassBoxes[key]?.value, existing.superview === parent {
-                        glass = existing
-                    } else {
-                        glass = Self.makeGlassView()
-                        let box = WeakGlass()
-                        box.value = glass
-                        glassBoxes[key] = box
-                    }
-                    parent.insertSubview(glass, belowSubview: field)
-                    glass.frame = field.frame
-                    glass.layer.cornerRadius = field.frame.height / 2
-                }
-            } else if glassBoxes[key] != nil {
-                glassBoxes[key]?.value?.removeFromSuperview()
-                glassBoxes[key] = nil
-                sc.searchBar.setSearchFieldBackgroundImage(nil, for: .normal)
-                field.backgroundColor = nil
-            }
         }
 
         func czfEnforceAll() {
-            var visitedNavs: [ObjectIdentifier: (nav: UINavigationController, anyActive: Bool)] = [:]
             var responder: UIResponder? = self
             while let r = responder {
                 if let vc = r as? UIViewController {
@@ -206,49 +143,20 @@ struct CZFSearchNavBarProbe: UIViewRepresentable {
                         czfFixSearchController(sc)
                     }
                     if let nav = vc.navigationController {
-                        var anyActive = false
                         for child in nav.viewControllers {
                             if let sc = child.navigationItem.searchController {
                                 czfFixSearchController(sc)
-                                if sc.isActive { anyActive = true }
                             }
                         }
-                        let navKey = ObjectIdentifier(nav)
-                        let prev = visitedNavs[navKey]?.anyActive ?? false
-                        visitedNavs[navKey] = (nav, prev || anyActive)
                     }
                 }
                 responder = r.next
-            }
-            // 点开搜索后标题变居中小字（Campbell 定版：就是
-            // 滑动时那种居中样式；没点时一律原样、不碰）：搜
-            // 索激活期间把大标题开关压成 false，标题就缩回
-            // 居中小字；退出搜索后只还原被本探针压过的那个。
-            for (navKey, entry) in visitedNavs {
-                let bar = entry.nav.navigationBar
-                if entry.anyActive {
-                    if bar.prefersLargeTitles {
-                        bar.prefersLargeTitles = false
-                        let box = WeakNav()
-                        box.value = entry.nav
-                        forcedInlineNavs[navKey] = box
-                    }
-                } else if let box = forcedInlineNavs[navKey], box.value === entry.nav {
-                    bar.prefersLargeTitles = true
-                    forcedInlineNavs[navKey] = nil
-                }
             }
             // 清掉已释放控制器的观察记录
             let deadKeys = observedBoxes.filter { $0.value.value == nil }.map { $0.key }
             for key in deadKeys {
                 observations[key] = nil
                 observedBoxes[key] = nil
-                glassBoxes[key]?.value?.removeFromSuperview()
-                glassBoxes[key] = nil
-            }
-            let deadNavKeys = forcedInlineNavs.filter { $0.value.value == nil }.map { $0.key }
-            for key in deadNavKeys {
-                forcedInlineNavs[key] = nil
             }
         }
     }
