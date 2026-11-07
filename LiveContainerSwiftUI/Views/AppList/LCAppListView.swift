@@ -77,9 +77,14 @@ struct CZFSearchNavBarProbe: UIViewRepresentable {
         private var skinnedControllers: Set<ObjectIdentifier> = []
         private var observations: [ObjectIdentifier: NSKeyValueObservation] = [:]
         private var observedBoxes: [ObjectIdentifier: WeakSC] = [:]
+        private var forcedInlineNavs: [ObjectIdentifier: WeakNav] = [:]
 
         private final class WeakSC {
             weak var value: UISearchController?
+        }
+
+        private final class WeakNav {
+            weak var value: UINavigationController?
         }
 
         // 玻璃搜索框底图：半透明白 + 细边、圆角胶囊，可拉伸
@@ -156,6 +161,7 @@ struct CZFSearchNavBarProbe: UIViewRepresentable {
         }
 
         func czfEnforceAll() {
+            var visitedNavs: [ObjectIdentifier: (nav: UINavigationController, anyActive: Bool)] = [:]
             var responder: UIResponder? = self
             while let r = responder {
                 if let vc = r as? UIViewController {
@@ -163,14 +169,37 @@ struct CZFSearchNavBarProbe: UIViewRepresentable {
                         czfFixSearchController(sc)
                     }
                     if let nav = vc.navigationController {
+                        var anyActive = false
                         for child in nav.viewControllers {
                             if let sc = child.navigationItem.searchController {
                                 czfFixSearchController(sc)
+                                if sc.isActive { anyActive = true }
                             }
                         }
+                        let navKey = ObjectIdentifier(nav)
+                        let prev = visitedNavs[navKey]?.anyActive ?? false
+                        visitedNavs[navKey] = (nav, prev || anyActive)
                     }
                 }
                 responder = r.next
+            }
+            // 点开搜索后标题变居中小字（Campbell 定版：就是
+            // 滑动时那种居中样式；没点时一律原样、不碰）：搜
+            // 索激活期间把大标题开关压成 false，标题就缩回
+            // 居中小字；退出搜索后只还原被本探针压过的那个。
+            for (navKey, entry) in visitedNavs {
+                let bar = entry.nav.navigationBar
+                if entry.anyActive {
+                    if bar.prefersLargeTitles {
+                        bar.prefersLargeTitles = false
+                        let box = WeakNav()
+                        box.value = entry.nav
+                        forcedInlineNavs[navKey] = box
+                    }
+                } else if let box = forcedInlineNavs[navKey], box.value === entry.nav {
+                    bar.prefersLargeTitles = true
+                    forcedInlineNavs[navKey] = nil
+                }
             }
             // 清掉已释放控制器的观察记录
             let deadKeys = observedBoxes.filter { $0.value.value == nil }.map { $0.key }
@@ -178,6 +207,10 @@ struct CZFSearchNavBarProbe: UIViewRepresentable {
                 observations[key] = nil
                 observedBoxes[key] = nil
                 skinnedControllers.remove(key)
+            }
+            let deadNavKeys = forcedInlineNavs.filter { $0.value.value == nil }.map { $0.key }
+            for key in deadNavKeys {
+                forcedInlineNavs[key] = nil
             }
         }
     }
