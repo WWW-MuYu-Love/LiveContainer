@@ -439,6 +439,16 @@ static CGFloat CZFDefaultScaleRatio(void) {
     return containerView;
 }
 
+// 顶栏实际生效系数（Campbell 2026-11-07 改）：自定义缩
+// 放时小窗口顶栏不要变动——未最大化时恒 1.0（栏高、字
+// 号、三键都保持原样），内容照常缩放；最大化时栏的缩
+// 放沿用 2026-11-06 规则，用记下的系数。所有读系数处
+// （栏高、字号、按钮直径/字形）一律读这个生效值，不直
+// 接读 czfChromeScale。
+- (CGFloat)czfEffectiveChromeScale {
+    return self.isMaximized ? self.czfChromeScale : 1.0;
+}
+
 // 顶部窗口栏跟随内容缩放（Campbell 2026-11-06）：窗口
 // 内容被缩放比例缩小时，标题栏也要跟着缩
 // ——栏高（在 czfSetChromeScale / updateVerticalConstraints
@@ -450,7 +460,7 @@ static CGFloat CZFDefaultScaleRatio(void) {
 // setupDecoratedView 先于按钮创建调用布局）时直接跳过。
 - (void)czfRefreshChromeVisuals {
     if (!self.czfButtonsContainer) return;
-    CGFloat cs = self.czfChromeScale;
+    CGFloat cs = self.czfEffectiveChromeScale;
     CGFloat d = CZFWindowButtonDiameter() * cs;
     CGFloat sp = CZFWindowButtonSpacing() * cs;
     UIImageSymbolConfiguration *config = [UIImageSymbolConfiguration configurationWithPointSize:CZFWindowButtonPointSizeValue * cs weight:UIImageSymbolWeightMedium];
@@ -491,7 +501,7 @@ static CGFloat CZFDefaultScaleRatio(void) {
         return;
     }
     [self czfRefreshChromeVisuals];
-    CGFloat h = 44 * cs;
+    CGFloat h = 44 * self.czfEffectiveChromeScale;
     for (NSLayoutConstraint *c in self.activatedVerticalConstraints) {
         if (c.firstItem == self.navigationBar && c.firstAttribute == NSLayoutAttributeHeight) {
             c.constant = h;
@@ -763,7 +773,7 @@ static CGFloat CZFDefaultScaleRatio(void) {
             // 都重算，布局与按钮图标保持同步。
             [self updateVerticalConstraints];
             UIImage *maximizeImage = [UIImage systemImageNamed:@"arrow.up.left.and.arrow.down.right.circle"];
-            UIImageConfiguration *maximizeConfig = [UIImageSymbolConfiguration configurationWithPointSize:CZFWindowButtonPointSizeValue * self.czfChromeScale weight:UIImageSymbolWeightMedium];
+            UIImageConfiguration *maximizeConfig = [UIImageSymbolConfiguration configurationWithPointSize:CZFWindowButtonPointSizeValue * self.czfEffectiveChromeScale weight:UIImageSymbolWeightMedium];
             [self.czfMaximizeButton setImage:[maximizeImage imageWithConfiguration:maximizeConfig] forState:UIControlStateNormal];
         }];
     } else {
@@ -789,7 +799,7 @@ static CGFloat CZFDefaultScaleRatio(void) {
             [self czfApplyScalePolicyForCurrentFrame];
             [self czfAutoCollapseDockIfNeeded];
             UIImage *restoreImage = [UIImage systemImageNamed:@"arrow.down.right.and.arrow.up.left.circle"];
-            UIImageConfiguration *restoreConfig = [UIImageSymbolConfiguration configurationWithPointSize:CZFWindowButtonPointSizeValue * self.czfChromeScale weight:UIImageSymbolWeightMedium];
+            UIImageConfiguration *restoreConfig = [UIImageSymbolConfiguration configurationWithPointSize:CZFWindowButtonPointSizeValue * self.czfEffectiveChromeScale weight:UIImageSymbolWeightMedium];
             [self.czfMaximizeButton setImage:[restoreImage imageWithConfiguration:restoreConfig] forState:UIControlStateNormal];
         }];
     }
@@ -1052,8 +1062,8 @@ static CGFloat CZFDefaultScaleRatio(void) {
         // （2026-11-06 一度改成最大化一律藏栏、并加了设置开
         // 关，同日 Campbell 令整体改回本规则，开关已撤。）
         BOOL hideWindowBar = MultitaskDockManager.shared.isCollapsed && self.isMaximized;
-        // 栏高跟随内容缩放（czfChromeScale，见 czfSetChromeScale）
-        CGFloat navBarHeight = hideWindowBar ? 0 : 44 * self.czfChromeScale;
+        // 栏高跟随顶栏生效系数（小窗恒 44，见 czfEffectiveChromeScale）
+        CGFloat navBarHeight = hideWindowBar ? 0 : 44 * self.czfEffectiveChromeScale;
         self.navigationBar.alpha = hideWindowBar ? 0 : 1;
         self.navigationBar.hidden = hideWindowBar;
         
