@@ -62,7 +62,8 @@ private enum CZFPendingInstall {
 // 一律挂在 NavigationView 里面的内容上（响应链走得
 // 到）；探针在窗口期间每 0.25 秒巡查一次，并用 KVO 盯
 // 住开关，系统随时改回 true 都立刻压回 false；搜索条
-// 样式不再动，保持系统默认，和静止/滑动时同款。
+// 样式：没点时保持系统默认（与静止/滑动时同款），点
+// 开后在框下垫一层真玻璃（见 czfFixSearchController）。
 struct CZFSearchNavBarProbe: UIViewRepresentable {
     func makeUIView(context: Context) -> UIView {
         ProbeView()
@@ -74,7 +75,7 @@ struct CZFSearchNavBarProbe: UIViewRepresentable {
 
     final class ProbeView: UIView {
         private var timer: Timer?
-        private var skinnedControllers: Set<ObjectIdentifier> = []
+        private var glassBoxes: [ObjectIdentifier: WeakGlass] = [:]
         private var observations: [ObjectIdentifier: NSKeyValueObservation] = [:]
         private var observedBoxes: [ObjectIdentifier: WeakSC] = [:]
         private var forcedInlineNavs: [ObjectIdentifier: WeakNav] = [:]
@@ -87,21 +88,37 @@ struct CZFSearchNavBarProbe: UIViewRepresentable {
             weak var value: UINavigationController?
         }
 
-        // 玻璃搜索框底图：半透明白 + 细边、圆角胶囊，可拉伸
-        static let glassFieldImage: UIImage = {
-            let size = CGSize(width: 40, height: 40)
-            let renderer = UIGraphicsImageRenderer(size: size)
-            let img = renderer.image { _ in
-                let rect = CGRect(origin: .zero, size: size).insetBy(dx: 0.5, dy: 0.5)
-                let path = UIBezierPath(roundedRect: rect, cornerRadius: 19)
-                UIColor(white: 1, alpha: 0.6).setFill()
-                path.fill()
-                UIColor(white: 0, alpha: 0.10).setStroke()
-                path.lineWidth = 1
-                path.stroke()
-            }
-            return img.resizableImage(withCapInsets: UIEdgeInsets(top: 19, left: 19, bottom: 19, right: 19))
+        private final class WeakGlass {
+            weak var value: UIVisualEffectView?
+        }
+
+        // 透明底图：激活时把搜索框自身的底换成全透明，
+        // 让垫在框下面的真玻璃层透出来。
+        static let clearFieldImage: UIImage = {
+            let size = CGSize(width: 2, height: 2)
+            return UIGraphicsImageRenderer(size: size).image { _ in
+                UIColor.clear.setFill()
+                UIRectFill(CGRect(origin: .zero, size: size))
+            }.resizableImage(withCapInsets: UIEdgeInsets(top: 0.5, left: 0.5, bottom: 0.5, right: 0.5))
         }()
+
+        // 真玻璃层：第一版用半透明底图冒充玻璃——没有模
+        // 糊，背后卡片的字原样透上来和搜索字糊成一团
+        // （Campbell 18:19 实测点名「一言难尽」）。真玻
+        // 璃必须实时模糊背景：iOS 26 用系统液态玻璃
+        // UIGlassEffect，旧系统用超薄材质模糊。
+        static func makeGlassView() -> UIVisualEffectView {
+            let effect: UIVisualEffect
+            if #available(iOS 26.0, *) {
+                effect = UIGlassEffect(style: .regular)
+            } else {
+                effect = UIBlurEffect(style: .systemUltraThinMaterial)
+            }
+            let view = UIVisualEffectView(effect: effect)
+            view.isUserInteractionEnabled = false
+            view.clipsToBounds = true
+            return view
+        }
 
         override func didMoveToWindow() {
             super.didMoveToWindow()
@@ -148,15 +165,35 @@ struct CZFSearchNavBarProbe: UIViewRepresentable {
                     }
                 }
             }
-            // 玻璃搜索框：只在点开搜索后盖玻璃底图；没点时
-            // （含滑动后停住）一律 3.8.22 原样，退出搜索撤
-            // 下恢复默认（Campbell 2026-11-07 定版）。
+            // 玻璃搜索框：只在点开搜索后生效——框自身的
+            // 底换全透明，框下面垫一层真玻璃（实时模糊背
+            // 后的内容，字不会透上来）；玻璃层每轮巡查都
+            // 对齐搜索框的帧（取消按钮进出会改框宽）。没
+            // 点时（含滑动后停住）一律 3.8.22 原样，退出
+            // 搜索撤下玻璃、恢复默认（Campbell 定版）。
+            let field = sc.searchBar.searchTextField
             if sc.isActive {
-                sc.searchBar.setSearchFieldBackgroundImage(Self.glassFieldImage, for: .normal)
-                skinnedControllers.insert(key)
-            } else if skinnedControllers.contains(key) {
+                sc.searchBar.setSearchFieldBackgroundImage(Self.clearFieldImage, for: .normal)
+                field.backgroundColor = .clear
+                if let parent = field.superview {
+                    let glass: UIVisualEffectView
+                    if let existing = glassBoxes[key]?.value, existing.superview === parent {
+                        glass = existing
+                    } else {
+                        glass = Self.makeGlassView()
+                        let box = WeakGlass()
+                        box.value = glass
+                        glassBoxes[key] = box
+                    }
+                    parent.insertSubview(glass, belowSubview: field)
+                    glass.frame = field.frame
+                    glass.layer.cornerRadius = field.frame.height / 2
+                }
+            } else if glassBoxes[key] != nil {
+                glassBoxes[key]?.value?.removeFromSuperview()
+                glassBoxes[key] = nil
                 sc.searchBar.setSearchFieldBackgroundImage(nil, for: .normal)
-                skinnedControllers.remove(key)
+                field.backgroundColor = nil
             }
         }
 
@@ -206,7 +243,8 @@ struct CZFSearchNavBarProbe: UIViewRepresentable {
             for key in deadKeys {
                 observations[key] = nil
                 observedBoxes[key] = nil
-                skinnedControllers.remove(key)
+                glassBoxes[key]?.value?.removeFromSuperview()
+                glassBoxes[key] = nil
             }
             let deadNavKeys = forcedInlineNavs.filter { $0.value.value == nil }.map { $0.key }
             for key in deadNavKeys {
