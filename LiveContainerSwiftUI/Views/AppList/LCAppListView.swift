@@ -49,6 +49,62 @@ private enum CZFPendingInstall {
     }
 }
 
+
+// 点搜索栏时不把导航栏藏起来（Campbell 定）：searchable
+// 激活时系统默认隐藏导航栏（标题、工具栏按钮一起消失），
+// 对应开关 hidesNavigationBarDuringPresentation 在
+// SwiftUI 里没暴露，用探针视图顺响应链找到本页的搜索
+// 控制器关掉它。各带搜索的页面在根视图上加
+// .czfKeepNavBarDuringSearch() 即可。
+struct CZFSearchNavBarProbe: UIViewRepresentable {
+    func makeUIView(context: Context) -> UIView {
+        ProbeView()
+    }
+
+    func updateUIView(_ uiView: UIView, context: Context) {
+        (uiView as? ProbeView)?.czfApply()
+    }
+
+    final class ProbeView: UIView {
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            czfApply()
+        }
+
+        func czfApply() {
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                var responder: UIResponder? = self
+                while let r = responder {
+                    if let vc = r as? UIViewController {
+                        if let sc = vc.navigationItem.searchController {
+                            sc.hidesNavigationBarDuringPresentation = false
+                        }
+                        if let nav = vc.navigationController {
+                            for child in nav.viewControllers {
+                                if let sc = child.navigationItem.searchController {
+                                    sc.hidesNavigationBarDuringPresentation = false
+                                }
+                            }
+                        }
+                    }
+                    responder = r.next
+                }
+            }
+        }
+    }
+}
+
+extension View {
+    func czfKeepNavBarDuringSearch() -> some View {
+        background(
+            CZFSearchNavBarProbe()
+                .frame(width: 0, height: 0)
+                .allowsHitTesting(false)
+        )
+    }
+}
+
 struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
     @State var didAppear = false
     // ipa choosing stuff
@@ -726,6 +782,7 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
         // 不用 .automatic 的自动收起。搜索词仍写本页 searchContext，
         // 「打开网址 / 在网上搜索」两行与名称过滤都不受影响。
         .searchable(text: $searchContext.query, placement: .navigationBarDrawer(displayMode: .always))
+        .czfKeepNavBarDuringSearch()
 
     }
     
@@ -772,124 +829,117 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
     }
     
     // 「下载管理」面板内容（加号菜单/传输中转圈打开）：
-    // 上半是进行中的下载（全局 DownloadHelper，一次一
-    // 个）、安装、队列各一行带进度；下半「已下载」是存
-    // 在 Downloads 目录里的 IPA（浏览器/链接下载先存这
-    // 里，点安装才装、点垃圾桶才删）。都没有时是空态。
+    // 仿数据管理「恢复备份」的双区同屏（Campbell 定）：
+    // 上区「下载中」（进行中下载带进度 + 排队下载 + 正在
+    // 安装），下区「已完成」（存好的 IPA）。操作全走滑
+    // 动（Campbell 定）：下载中向左滑是取消、已完成向左
+    // 滑是删除、已完成向右滑是安装，行上不再放按钮。
     private var transferProgressSheet: some View {
         NavigationView {
-            Group {
-                if downloadHelper.isDownloading || installprogressVisible || installQueueRunning || !pendingInstalls.isEmpty || !downloadedFiles.isEmpty || !pendingDownloadUrls.isEmpty {
-                    List {
-                        if downloadHelper.isDownloading {
-                            Section("下载") {
-                                VStack(alignment: .leading, spacing: 6) {
-                                    Text(downloadHelper.currentDownloadName.isEmpty ? "下载中" : downloadHelper.currentDownloadName)
-                                        .font(.headline)
-                                        .lineLimit(1)
-                                    if downloadHelper.totalSize > 0 {
-                                        ProgressView(value: downloadHelper.downloadProgress, total: 1)
-                                        HStack {
-                                            Text("\(czfTransferFormatBytes(downloadHelper.downloadedSize)) / \(czfTransferFormatBytes(downloadHelper.totalSize))")
-                                            Spacer()
-                                            Text("\(Int(downloadHelper.downloadProgress * 100))%")
-                                        }
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                    } else {
-                                        ProgressView()
-                                        Text("已下载 \(czfTransferFormatBytes(downloadHelper.downloadedSize))")
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
-                                    }
-                                    Button("取消下载", role: .destructive) {
-                                        downloadHelper.cancel()
-                                    }
-                                    .font(.subheadline)
+            List {
+                Section("下载中") {
+                    if !downloadHelper.isDownloading && pendingDownloadUrls.isEmpty && !installprogressVisible && !installQueueRunning && pendingInstalls.isEmpty {
+                        Text("暂无进行中的下载")
+                            .foregroundColor(.secondary)
+                    }
+                    if downloadHelper.isDownloading {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text(downloadHelper.currentDownloadName.isEmpty ? "下载中" : downloadHelper.currentDownloadName)
+                                .font(.headline)
+                                .lineLimit(1)
+                            if downloadHelper.totalSize > 0 {
+                                ProgressView(value: downloadHelper.downloadProgress, total: 1)
+                                HStack {
+                                    Text("\(czfTransferFormatBytes(downloadHelper.downloadedSize)) / \(czfTransferFormatBytes(downloadHelper.totalSize))")
+                                    Spacer()
+                                    Text("\(Int(downloadHelper.downloadProgress * 100))%")
                                 }
-                                .padding(.vertical, 4)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            } else {
+                                ProgressView()
+                                Text("已下载 \(czfTransferFormatBytes(downloadHelper.downloadedSize))")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
                             }
                         }
-                        if !pendingDownloadUrls.isEmpty {
-                            Section("下载队列") {
-                                ForEach(pendingDownloadUrls, id: \.absoluteString) { qurl in
-                                    HStack {
-                                        Text(qurl.lastPathComponent)
-                                            .lineLimit(1)
-                                        Spacer()
-                                        Button(role: .destructive) {
-                                            pendingDownloadUrls.removeAll { $0 == qurl }
-                                        } label: {
-                                            Image(systemName: "xmark.circle")
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        if installprogressVisible {
-                            Section("安装") {
-                                VStack(alignment: .leading, spacing: 6) {
-                                    Text("正在安装")
-                                        .font(.headline)
-                                    ProgressView(value: installProgressPercentage, total: 1)
-                                    Text("\(Int(installProgressPercentage * 100))%")
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                }
-                                .padding(.vertical, 4)
-                            }
-                        }
-                        if (installQueueRunning && installQueueTotal > 1) || !pendingInstalls.isEmpty {
-                            Section("队列") {
-                                if installQueueRunning && installQueueTotal > 1 {
-                                    Text("队列安装中 \(installQueueDone + 1)/\(installQueueTotal)：\(installQueueCurrent)")
-                                        .lineLimit(1)
-                                }
-                                if !pendingInstalls.isEmpty {
-                                    Text("排队中（\(pendingInstalls.count)）：当前装完接着装")
-                                }
-                            }
-                        }
-                        if !downloadedFiles.isEmpty {
-                            Section("已下载") {
-                                ForEach(downloadedFiles) { file in
-                                    HStack(spacing: 10) {
-                                        VStack(alignment: .leading, spacing: 2) {
-                                            Text(file.name)
-                                                .lineLimit(1)
-                                            Text("\(czfTransferFormatBytes(file.size)) · \(file.date.formatted(date: .abbreviated, time: .shortened))")
-                                                .font(.caption)
-                                                .foregroundStyle(.secondary)
-                                        }
-                                        Spacer()
-                                        Button("安装") {
-                                            transferProgressShow = false
-                                            Task { await installFromUrl(urlStr: file.url.absoluteString) }
-                                        }
-                                        .font(.subheadline)
-                                        Button(role: .destructive) {
-                                            try? FileManager.default.removeItem(at: file.url)
-                                            refreshDownloadedFiles()
-                                        } label: {
-                                            Image(systemName: "trash")
-                                        }
-                                    }
-                                    .padding(.vertical, 2)
-                                }
+                        .padding(.vertical, 4)
+                        .swipeActions(edge: .trailing) {
+                            Button(role: .destructive) {
+                                downloadHelper.cancel()
+                            } label: {
+                                Label("取消", systemImage: "xmark")
                             }
                         }
                     }
-                } else {
-                    VStack(spacing: 12) {
-                        Image(systemName: "checkmark.circle")
-                            .font(.system(size: 56))
-                            .foregroundStyle(.secondary)
-                        Text("暂无下载")
-                            .font(.title3.bold())
-                        Text("通过浏览器或链接下载的 IPA 会保存在这里。")
-                            .foregroundStyle(.secondary)
+                    ForEach(pendingDownloadUrls, id: \.absoluteString) { qurl in
+                        HStack {
+                            Text(qurl.lastPathComponent)
+                                .lineLimit(1)
+                            Spacer()
+                            Text("排队中")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        .swipeActions(edge: .trailing) {
+                            Button(role: .destructive) {
+                                pendingDownloadUrls.removeAll { $0 == qurl }
+                            } label: {
+                                Label("取消", systemImage: "xmark")
+                            }
+                        }
                     }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    if installprogressVisible {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("正在安装")
+                                .font(.headline)
+                            ProgressView(value: installProgressPercentage, total: 1)
+                            Text("\(Int(installProgressPercentage * 100))%")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding(.vertical, 4)
+                    }
+                    if installQueueRunning && installQueueTotal > 1 {
+                        Text("队列安装中 \(installQueueDone + 1)/\(installQueueTotal)：\(installQueueCurrent)")
+                            .lineLimit(1)
+                    }
+                    if !pendingInstalls.isEmpty {
+                        Text("排队中（\(pendingInstalls.count)）：当前装完接着装")
+                    }
+                }
+                Section("已完成") {
+                    if downloadedFiles.isEmpty {
+                        Text("暂无已完成的下载")
+                            .foregroundColor(.secondary)
+                    }
+                    ForEach(downloadedFiles) { file in
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(file.name)
+                                .lineLimit(1)
+                            Text("\(czfTransferFormatBytes(file.size)) · \(file.date.formatted(date: .abbreviated, time: .shortened))")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding(.vertical, 2)
+                        .swipeActions(edge: .trailing) {
+                            Button(role: .destructive) {
+                                try? FileManager.default.removeItem(at: file.url)
+                                refreshDownloadedFiles()
+                            } label: {
+                                Label("删除", systemImage: "trash")
+                            }
+                        }
+                        .swipeActions(edge: .leading) {
+                            Button {
+                                transferProgressShow = false
+                                Task { await installFromUrl(urlStr: file.url.absoluteString) }
+                            } label: {
+                                Label("安装", systemImage: "square.and.arrow.down")
+                            }
+                            .tint(.blue)
+                        }
+                    }
                 }
             }
             .navigationTitle("下载管理")

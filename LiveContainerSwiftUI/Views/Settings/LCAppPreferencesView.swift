@@ -168,6 +168,7 @@ struct LCAppPreferencesView: View {
         .czfListSectionSpacing(10)
         .navigationTitle("应用设置")
         .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .always), prompt: "搜索设置")
+        .czfKeepNavBarDuringSearch()
     }
 
     @ViewBuilder private var interfaceSection: some View {

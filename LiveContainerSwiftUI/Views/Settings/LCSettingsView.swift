@@ -146,6 +146,7 @@ struct LCSettingsView: View {
             .czfListSectionSpacing(10)
             .navigationBarTitle("lc.tabView.settings".loc)
             .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .always), prompt: "搜索设置")
+            .czfKeepNavBarDuringSearch()
             .alert("lc.common.error".loc, isPresented: $errorShow){
             } message: {
                 Text(errorInfo)

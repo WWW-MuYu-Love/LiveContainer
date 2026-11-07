@@ -132,6 +132,7 @@ struct LCEdgeGestureSettingView: View {
         .czfListSectionSpacing(10)
         .navigationTitle("手势控制")
         .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .always), prompt: "搜索设置")
+        .czfKeepNavBarDuringSearch()
     }
 
     private func sensitivityPicker(selection: Binding<Int>) -> some View {

@@ -632,6 +632,7 @@ struct LCTweaksView: View {
         // 搜索栏与源页同款（Campbell 定）：导航栏下方常显，
         // 不用 .automatic 的自动收起；提示词仍是「搜索模块」。
         .searchable(text: $searchContext.query, placement: .navigationBarDrawer(displayMode: .always), prompt: "搜索模块")
+        .czfKeepNavBarDuringSearch()
 
     }
 }

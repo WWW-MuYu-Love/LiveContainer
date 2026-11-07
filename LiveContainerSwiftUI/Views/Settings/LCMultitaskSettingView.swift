@@ -270,5 +270,6 @@ struct LCMultitaskSettingView: View {
         .navigationTitle("lc.appBanner.multitask".loc)
         .navigationBarTitleDisplayMode(.inline)
         .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .always), prompt: "搜索设置")
+        .czfKeepNavBarDuringSearch()
     }
 }

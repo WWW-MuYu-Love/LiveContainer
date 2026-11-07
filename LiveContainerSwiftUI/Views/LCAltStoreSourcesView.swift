@@ -774,6 +774,7 @@ struct LCSourcesView: View {
             }
         }
         .searchable(text: $searchContext.query, placement: .navigationBarDrawer(displayMode: .always))
+        .czfKeepNavBarDuringSearch()
 
         .onAppear {
             refreshUpdatableCache()
