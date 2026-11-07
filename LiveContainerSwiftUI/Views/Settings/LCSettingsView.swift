@@ -540,6 +540,13 @@ struct LCSettingsView: View {
     // 本机服务 CZFLocalIPAServer 已随本次改令整体删除。
     private func startShareDelivery(scheme: String, appName: String) {
         guard let info = updateInfo, handoffBusyApp == nil else { return }
+        // 已有更新包在下载任务里时不允许再下（Campbell
+        // 定）：更新包同一时间只准一个下载任务
+        guard !downloadHelper.updatePackageDownloading else {
+            errorInfo = "更新包正在下载中，请等它下完"
+            errorShow = true
+            return
+        }
         // 全局下载器只有一个：正被占用（在下别的包）时不
         // 硬抢，明说原因让用户稍后再试
         guard !downloadHelper.isDownloading else {
@@ -548,6 +555,7 @@ struct LCSettingsView: View {
             return
         }
         handoffBusyApp = appName
+        downloadHelper.updatePackageDownloading = true
         Task {
             let fileName = info.downloadURL.lastPathComponent.isEmpty ? "LiveContainer.ipa" : info.downloadURL.lastPathComponent
             let dest = CZFDownloadStore.uniqueDestination(filename: fileName)
@@ -557,11 +565,12 @@ struct LCSettingsView: View {
                     // 用户在下载管理里取消了：清掉目标文件，
                     // 不弹分享、也不退直链，静静结束
                     try? FileManager.default.removeItem(at: dest)
-                    await MainActor.run { handoffBusyApp = nil }
+                    await MainActor.run { handoffBusyApp = nil; downloadHelper.updatePackageDownloading = false }
                     return
                 }
                 await MainActor.run {
                     handoffBusyApp = nil
+                    downloadHelper.updatePackageDownloading = false
                     czfPresentActivitySheet(items: [dest]) {
                         try? FileManager.default.removeItem(at: dest)
                     }
@@ -572,6 +581,7 @@ struct LCSettingsView: View {
                 try? FileManager.default.removeItem(at: dest)
                 await MainActor.run {
                     handoffBusyApp = nil
+                    downloadHelper.updatePackageDownloading = false
                     openInstall(scheme: scheme, appName: appName)
                     errorInfo = "更新包下载没成（\(error.localizedDescription)），已改用直链交给 \(appName)、由它自己下载"
                     errorShow = true

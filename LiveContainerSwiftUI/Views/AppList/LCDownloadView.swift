@@ -15,6 +15,12 @@ public final class DownloadHelper : ObservableObject {
     // 当前下载的文件名（取自下载地址的最后一段）：下载
     // 管理面板显示用。
     @Published var currentDownloadName: String = ""
+    // 当前下载的地址：下载管理判重用（正在下的地址再来
+    // 一次算重复任务）
+    @Published var currentDownloadURL: URL? = nil
+    // 更新包递交的下载正在进行（设置页置位）：已有更新
+    // 包在下载任务里时，不允许再下第二个（Campbell 定）
+    @Published var updatePackageDownloading = false
     @Published var cancelled = false
     // 进度发布节流用：上次发布进度的时间
     private var lastProgressPublish = Date.distantPast
@@ -64,6 +70,7 @@ public final class DownloadHelper : ObservableObject {
         await MainActor.run {
             cancelled = false
             currentDownloadName = url.lastPathComponent
+            currentDownloadURL = url
 
             downloadProgress = 0.0
             downloadedSize = 0
@@ -97,6 +104,7 @@ public final class DownloadHelper : ObservableObject {
             }, completeCallback: {tempFileURL, error in
                 Task{ await MainActor.run {
                     self.isDownloading = false
+                    self.currentDownloadURL = nil
                 }}
                 if let error {
                     print(error)

@@ -361,7 +361,7 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
                         // 进度。原来这里在安装期间也是转圈，但它
                         // 不是按钮、点不了；现在转圈包在 Button
                         // 里，能点。
-                        if downloadHelper.isDownloading || installprogressVisible || installQueueRunning || !pendingInstalls.isEmpty {
+                        if downloadHelper.isDownloading || installprogressVisible || installQueueRunning || !pendingInstalls.isEmpty || !pendingDownloadUrls.isEmpty {
                             Button {
                                 transferProgressShow = true
                             } label: {
@@ -779,7 +779,7 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
     private var transferProgressSheet: some View {
         NavigationView {
             Group {
-                if downloadHelper.isDownloading || installprogressVisible || installQueueRunning || !pendingInstalls.isEmpty || !downloadedFiles.isEmpty {
+                if downloadHelper.isDownloading || installprogressVisible || installQueueRunning || !pendingInstalls.isEmpty || !downloadedFiles.isEmpty || !pendingDownloadUrls.isEmpty {
                     List {
                         if downloadHelper.isDownloading {
                             Section("下载") {
@@ -808,6 +808,22 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
                                     .font(.subheadline)
                                 }
                                 .padding(.vertical, 4)
+                            }
+                        }
+                        if !pendingDownloadUrls.isEmpty {
+                            Section("下载队列") {
+                                ForEach(pendingDownloadUrls, id: \.absoluteString) { qurl in
+                                    HStack {
+                                        Text(qurl.lastPathComponent)
+                                            .lineLimit(1)
+                                        Spacer()
+                                        Button(role: .destructive) {
+                                            pendingDownloadUrls.removeAll { $0 == qurl }
+                                        } label: {
+                                            Image(systemName: "xmark.circle")
+                                        }
+                                    }
+                                }
                             }
                         }
                         if installprogressVisible {
@@ -1358,12 +1374,22 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
     // 把 IPA 下载进「下载管理」先存着（Campbell 定）：
     // 浏览器下载与链接下载都走这里，不再直接安装。
     // 下载器全局只有一个，忙（正在下别的/正在安装）时
-    // 先排队，忙完自动接着下，不静默丢请求。
+    // 先排队（队列在面板里可见、能删），忙完自动接着下。
+    // 排队规则（Campbell 定）：最多排 5 个不同的任务；
+    // 重复任务（正在下/已在队）不加，弹提示说明。
     func downloadToManager(url: URL) async {
+        if downloadHelper.currentDownloadURL == url || pendingDownloadUrls.contains(url) {
+            installInfo = "「\(url.lastPathComponent)」已在下载中或队列里，不重复添加"
+            installInfoShow = true
+            return
+        }
         if isDownloadingToManager || downloadHelper.isDownloading || installprogressVisible {
-            if !pendingDownloadUrls.contains(url) {
-                pendingDownloadUrls.append(url)
+            if pendingDownloadUrls.count >= 5 {
+                installInfo = "下载队列已满（最多排队 5 个），请等前面的下完再加"
+                installInfoShow = true
+                return
             }
+            pendingDownloadUrls.append(url)
             return
         }
         isDownloadingToManager = true
