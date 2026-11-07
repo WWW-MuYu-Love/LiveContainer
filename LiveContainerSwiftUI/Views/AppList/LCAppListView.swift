@@ -128,7 +128,7 @@ struct CZFSearchNavBarProbe: UIViewRepresentable {
         // 找到一个搜索控制器就把开关压回 false，并挂 KVO
         // 长期盯住：SwiftUI 在搜索激活前后可能把开关重置
         // 成 true，KVO 一发现立刻压回。
-        func czfFixSearchController(_ sc: UISearchController, hostView: UIView?) {
+        func czfFixSearchController(_ sc: UISearchController) {
             if sc.hidesNavigationBarDuringPresentation {
                 sc.hidesNavigationBarDuringPresentation = false
             }
@@ -143,10 +143,10 @@ struct CZFSearchNavBarProbe: UIViewRepresentable {
                     }
                 }
             }
-            // 玻璃搜索框：点开搜索、或页面滑动时才盖玻璃底
-            // 图（静止时不碰——应用页静止本来就是玻璃，盖了
-            // 反而毁掉）；回到顶部且没在搜就撤下，恢复默认。
-            if sc.isActive || Self.czfIsScrolled(hostView) {
+            // 玻璃搜索框：只在点开搜索后盖玻璃底图；没点时
+            // （含滑动后停住）一律 3.8.22 原样，退出搜索撤
+            // 下恢复默认（Campbell 2026-11-07 定版）。
+            if sc.isActive {
                 sc.searchBar.setSearchFieldBackgroundImage(Self.glassFieldImage, for: .normal)
                 skinnedControllers.insert(key)
             } else if skinnedControllers.contains(key) {
@@ -155,31 +155,12 @@ struct CZFSearchNavBarProbe: UIViewRepresentable {
             }
         }
 
-        // 页面是否已滑离顶部：找宿主里第一个够高的滚动视图看偏移
-        static func czfIsScrolled(_ view: UIView?) -> Bool {
-            guard let view = view,
-                  let sv = czfFirstScrollView(in: view) else { return false }
-            return sv.contentOffset.y > -sv.adjustedContentInset.top + 1
-        }
-
-        private static func czfFirstScrollView(in view: UIView) -> UIScrollView? {
-            for sub in view.subviews {
-                if let sv = sub as? UIScrollView, sv.bounds.height > 200 {
-                    return sv
-                }
-                if let found = czfFirstScrollView(in: sub) {
-                    return found
-                }
-            }
-            return nil
-        }
-
         func czfEnforceAll() {
             var responder: UIResponder? = self
             while let r = responder {
                 if let vc = r as? UIViewController {
                     if let sc = vc.navigationItem.searchController {
-                        czfFixSearchController(sc, hostView: vc.viewIfLoaded)
+                        czfFixSearchController(sc)
                     }
                     if let nav = vc.navigationController {
                         // 滑动/搜索时顶栏也用贴顶的透明外观：不
@@ -193,7 +174,7 @@ struct CZFSearchNavBarProbe: UIViewRepresentable {
                         }
                         for child in nav.viewControllers {
                             if let sc = child.navigationItem.searchController {
-                                czfFixSearchController(sc, hostView: child.viewIfLoaded)
+                                czfFixSearchController(sc)
                             }
                         }
                     }
