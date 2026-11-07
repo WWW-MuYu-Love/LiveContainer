@@ -61,8 +61,15 @@ private enum CZFPendingInstall {
 // 灰底，和静止时不一样。现在的办法：searchable 与探针
 // 一律挂在 NavigationView 里面的内容上（响应链走得
 // 到）；探针在窗口期间每 0.25 秒巡查一次，并用 KVO 盯
-// 住开关，系统随时改回 true 都立刻压回 false；搜索条
-// 样式不再动，保持系统默认，和静止/滑动时同款。
+// 住开关，系统随时改回 true 都立刻压回 false。
+// 3.8.22 实测还剩两处不统一（Campbell 截图）：① 搜索
+// 一激活，导航栏切到 standard 外观冒出材质横带、标题
+// 跳成左对齐大标题（标题居中靠各页 .inline 钉死）；
+// ② 搜索框变灰底填充，和静止时的玻璃白枕两个样。探
+// 针巡查里一并处理：导航栏 standard/compact 外观换成
+// 贴顶的透明外观（静止/滑动/搜索三态同款、无横带）；
+// 搜索框全程换玻璃底图（模块页静止时系统给的也是灰
+// 底，只在激活时盖会出现各页不一致）。
 struct CZFSearchNavBarProbe: UIViewRepresentable {
     func makeUIView(context: Context) -> UIView {
         ProbeView()
@@ -73,6 +80,22 @@ struct CZFSearchNavBarProbe: UIViewRepresentable {
     }
 
     final class ProbeView: UIView {
+        // 玻璃搜索框底图：半透明白 + 细描边、圆角可拉伸，
+        // 盖掉搜索激活时系统给输入框的灰底填充。
+        static let glassFieldImage: UIImage = {
+            let size = CGSize(width: 40, height: 40)
+            let img = UIGraphicsImageRenderer(size: size).image { _ in
+                let rect = CGRect(x: 0.5, y: 0.5, width: 39, height: 39)
+                let path = UIBezierPath(roundedRect: rect, cornerRadius: 19)
+                UIColor(white: 1, alpha: 0.6).setFill()
+                path.fill()
+                UIColor(white: 0, alpha: 0.10).setStroke()
+                path.lineWidth = 1
+                path.stroke()
+            }
+            return img.resizableImage(withCapInsets: UIEdgeInsets(top: 19, left: 19, bottom: 19, right: 19))
+        }()
+
         private var timer: Timer?
         private var observations: [ObjectIdentifier: NSKeyValueObservation] = [:]
         private var observedBoxes: [ObjectIdentifier: WeakSC] = [:]
@@ -115,6 +138,10 @@ struct CZFSearchNavBarProbe: UIViewRepresentable {
             if sc.hidesNavigationBarDuringPresentation {
                 sc.hidesNavigationBarDuringPresentation = false
             }
+            // 搜索框玻璃底图：全程盖上（巡查每 0.25 秒重设
+            // 一次，防系统重置）——静止/滑动/搜索三态、各页
+            // 都是同一个玻璃框，不再有的灰有的白。
+            sc.searchBar.setSearchFieldBackgroundImage(Self.glassFieldImage, for: .normal)
             let key = ObjectIdentifier(sc)
             if observedBoxes[key]?.value == nil {
                 let box = WeakSC()
@@ -136,6 +163,20 @@ struct CZFSearchNavBarProbe: UIViewRepresentable {
                         czfFixSearchController(sc)
                     }
                     if let nav = vc.navigationController {
+                        // 外观统一：standard/compact 换成贴顶透
+                        // 明外观，点搜索/滑动时不再冒材质横带。
+                        let bar = nav.navigationBar
+                        if let edgeApp = bar.scrollEdgeAppearance {
+                            if bar.standardAppearance !== edgeApp {
+                                bar.standardAppearance = edgeApp
+                            }
+                            if bar.compactAppearance !== edgeApp {
+                                bar.compactAppearance = edgeApp
+                            }
+                            if bar.compactScrollEdgeAppearance !== edgeApp {
+                                bar.compactScrollEdgeAppearance = edgeApp
+                            }
+                        }
                         for child in nav.viewControllers {
                             if let sc = child.navigationItem.searchController {
                                 czfFixSearchController(sc)
@@ -475,6 +516,10 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
             }
             
             .navigationTitle("lc.appList.myApps".loc)
+            // 页名钉在中间（Campbell 定）：静止截图里页名就是
+            // 居中小字；不钉死的话搜索一激活系统就把它跳成左
+            // 对齐大标题。各带搜索页一律 .inline 居中。
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     if sharedModel.multiLCStatus != 2 {

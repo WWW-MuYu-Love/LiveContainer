@@ -258,6 +258,7 @@ struct LCTweakFolderView : View {
         // 默认约 35），卡片框架疏密与源页一致。
         .czfListSectionSpacing(10)
         .navigationTitle(isRoot ? "lc.tabView.tweaks".loc : baseUrl.lastPathComponent)
+        .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 if !isTweakSigning && !isTweakInstalling && LCSharedUtils.certificatePassword() != nil {
