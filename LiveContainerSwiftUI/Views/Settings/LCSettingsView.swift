@@ -64,6 +64,9 @@ struct LCSettingsView: View {
     // 表递文件）：Seal / Sidekite 共用一把闸（同一时间只
     // 下一份包、弹一张分享表），非空时两个按钮一起禁用。
     @State private var handoffBusyApp: String?
+    // 全局下载器（LCTabView 注入）：更新包递交也走它下，
+    // 进度能在「下载管理」里看
+    @EnvironmentObject private var downloadHelper : DownloadHelper
 
     // 本页搜索词：页面自己的系统搜索框写它。
     @State private var searchText = ""
@@ -529,25 +532,34 @@ struct LCSettingsView: View {
     // Campbell 已确认接受）；两钮下载的是同一份更新包、
     // 弹的是同一张分享表，按钮名只标示主推目标，点哪家
     // 由用户在分享表里定。下载失败就退回直链交接
-    // （openInstall 原路）并弹错说明，不静默换路。分享结
-    // 束（完成或取消）后删掉本地递交副本，不长期占空间。
+    // （openInstall 原路）并弹错说明，不静默换路。
+    // 2026-11-07 起并入「下载管理」（Campbell 令）：下载
+    // 改走全局 DownloadHelper、存进下载管理目录，下载
+    // 进度与文件都出现在下载管理里；但分享结束（完成或
+    // 取消）后仍删掉这份更新包，不长期保留（同日他定）。
     // 本机服务 CZFLocalIPAServer 已随本次改令整体删除。
     private func startShareDelivery(scheme: String, appName: String) {
         guard let info = updateInfo, handoffBusyApp == nil else { return }
+        // 全局下载器只有一个：正被占用（在下别的包）时不
+        // 硬抢，明说原因让用户稍后再试
+        guard !downloadHelper.isDownloading else {
+            errorInfo = "有下载正在进行，请等它下完再更新"
+            errorShow = true
+            return
+        }
         handoffBusyApp = appName
         Task {
+            let fileName = info.downloadURL.lastPathComponent.isEmpty ? "LiveContainer.ipa" : info.downloadURL.lastPathComponent
+            let dest = CZFDownloadStore.uniqueDestination(filename: fileName)
             do {
-                let (tmpURL, response) = try await URLSession.shared.download(from: info.downloadURL)
-                if let http = response as? HTTPURLResponse, http.statusCode != 200 {
-                    throw NSError(domain: "CZFUpdateShare", code: http.statusCode, userInfo: [NSLocalizedDescriptionKey: "更新包下载失败（HTTP \(http.statusCode)）"])
+                try await downloadHelper.download(url: info.downloadURL, to: dest)
+                if downloadHelper.cancelled {
+                    // 用户在下载管理里取消了：清掉目标文件，
+                    // 不弹分享、也不退直链，静静结束
+                    try? FileManager.default.removeItem(at: dest)
+                    await MainActor.run { handoffBusyApp = nil }
+                    return
                 }
-                let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-                let dir = caches.appendingPathComponent("CZFUpdateHandoff", isDirectory: true)
-                try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-                let fileName = info.downloadURL.lastPathComponent.isEmpty ? "LiveContainer.ipa" : info.downloadURL.lastPathComponent
-                let dest = dir.appendingPathComponent(fileName)
-                try? FileManager.default.removeItem(at: dest)
-                try FileManager.default.moveItem(at: tmpURL, to: dest)
                 await MainActor.run {
                     handoffBusyApp = nil
                     czfPresentActivitySheet(items: [dest]) {
@@ -555,6 +567,9 @@ struct LCSettingsView: View {
                     }
                 }
             } catch {
+                // 失败清掉可能搬进目录的残留文件（HTTP 错误时
+                // 报错页会被当成文件搬到目标位），再退直链
+                try? FileManager.default.removeItem(at: dest)
                 await MainActor.run {
                     handoffBusyApp = nil
                     openInstall(scheme: scheme, appName: appName)
