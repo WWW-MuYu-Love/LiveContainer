@@ -328,7 +328,13 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
                 })
                 .hidden()
                 
-                LazyVStack {
+                // 卡片行是嵌入的 UIKit 控制器：LazyVStack 的懒
+                // 惰复用会在列表增删、长按菜单升起/落下时把行帧
+                // 在相邻行之间串位，卡片叠到上一行出残影
+                // （3.8.21 录屏实测，与此前 Feather/YouTube 叠
+                // 卡同根）。改普通 VStack 全量排布，行帧稳定；
+                // 应用数量通常不多，全量建行开销可接受。
+                VStack {
                     // 浏览器式搜索行：有输入时才出现，网址放最上面
                     if !czfSearchText.isEmpty {
                         if let url = czfSearchURL {
@@ -387,7 +393,7 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
                 VStack {
                     if LCUtils.appGroupUserDefault.bool(forKey: "LCStrictHiding") {
                         if sharedModel.isHiddenAppUnlocked {
-                            LazyVStack {
+                            VStack {
                                 HStack {
                                     Text("lc.appList.hiddenApps".loc)
                                         .font(.system(.title2).bold())
@@ -410,7 +416,7 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
                             }
                         }
                     } else if sharedModel.hiddenApps.count > 0 {
-                        LazyVStack {
+                        VStack {
                             HStack {
                                 Text("lc.appList.hiddenApps".loc)
                                     .font(.system(.title2).bold())
