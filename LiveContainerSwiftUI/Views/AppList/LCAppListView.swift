@@ -337,10 +337,10 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
                     ForEach(filteredApps, id: \.self) { app in
                         LCAppBanner(appModel: app, delegate: self)
                     }
-                    .transition(.scale)
+                    // 行过渡已删：卡片是嵌入的 UIKit 控制器，列表增删时 scale 过渡会把新旧两张卡叠在同一行（Feather/YouTube 重叠实测）
                 }
                 .padding()
-                .animation(searchContext.isTyping ? nil : .easeInOut, value: filteredApps)
+                // 列表数据变化不再做滑动动画：同上，UIKit 卡片在动画重排里会错位重叠；搜索输入时本来就不动画
 
                 VStack {
                     if LCUtils.appGroupUserDefault.bool(forKey: "LCStrictHiding") {
@@ -355,7 +355,7 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
                                 ForEach(filteredHiddenApps, id: \.self) { app in
                                     LCAppBanner(appModel: app, delegate: self)
                                 }
-                                .transition(.scale)
+                                // 行过渡已删：卡片是嵌入的 UIKit 控制器，列表增删时 scale 过渡会把新旧两张卡叠在同一行（Feather/YouTube 重叠实测）
                                 
                             }
                             .padding()
