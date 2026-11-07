@@ -933,7 +933,7 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
                         .swipeActions(edge: .leading) {
                             Button {
                                 transferProgressShow = false
-                                Task { await installFromUrl(urlStr: file.url.absoluteString) }
+                                installDownloadedFile(file)
                             } label: {
                                 Label("安装", systemImage: "square.and.arrow.down")
                             }
@@ -1463,6 +1463,37 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
         }
     }
 
+    // 下载管理里的「安装」：直接拿列表里的文件地址装，
+    // 不把地址转成字符串再绕 installFromUrl（那条路里
+    // 有分享扩展的书签兜底，地址读不到时会把安装目标
+    // 换掉）。正忙着装别的时照旧进待装队列排队。
+    func installDownloadedFile(_ file: CZFDownloadedFile) {
+        if sharedModel.multiLCStatus == 2 {
+            errorInfo = "lc.appList.manageInPrimaryTip".loc
+            errorShow = true
+            return
+        }
+        if installprogressVisible {
+            let urlStr = file.url.absoluteString
+            if !pendingInstalls.contains(where: { $0.urlStr == urlStr }) {
+                pendingInstalls.append(.url(urlStr, false, false, false))
+            }
+            return
+        }
+        Task {
+            self.installprogressVisible = true
+            do {
+                try await installIpaFile(file.url)
+            } catch {
+                errorInfo = error.localizedDescription
+                errorShow = true
+            }
+            self.installprogressVisible = false
+            drainPendingInstalls()
+            drainPendingDownloads()
+        }
+    }
+
     func drainPendingDownloads() {
         guard !pendingDownloadUrls.isEmpty else { return }
         let next = pendingDownloadUrls.removeFirst()
@@ -1797,8 +1828,16 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
                         relativeTo: nil,
                         bookmarkDataIsStale: &isStale
                     )
-                    installUrl = resolvedURL
-                    didStartAccessing = resolvedURL.startAccessingSecurityScopedResource()
+                    // 书签兜底只准找回同一个文件（分享扩展递
+                    // 进来的那个包）：文件名对不上一律不用。
+                    // 原来不核对就把安装目标整个换成书签里的
+                    // 文件——那是以前分享打开过的旧包，于是
+                    // 在下载管理里点新包、装出来却是早就卸
+                    // 掉的旧 App（Campbell 真机实测）。
+                    if resolvedURL.lastPathComponent == installUrl.lastPathComponent {
+                        installUrl = resolvedURL
+                        didStartAccessing = resolvedURL.startAccessingSecurityScopedResource()
+                    }
                 } catch {
                     errorInfo =  "读取共享的 IPA 文件失败：\(LCUtils.czfFriendlyError(error))"
                     errorShow = true
