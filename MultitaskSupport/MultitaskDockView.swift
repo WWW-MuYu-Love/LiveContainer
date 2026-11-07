@@ -177,6 +177,9 @@ extension Notification.Name {
     // 呈现时按目标窗口写入，下滑关闭/互切动画据此算静止位。
     private var czfPanelGrabber: UIView?
     private var czfAppPanelBottomInset: CGFloat = 0
+    // 面板内容的贴合高度（呈现时量测，面板高度据此贴合
+    // 内容、不再固定一截留白；0 = 还没量过，用原定高）
+    private var czfAppPanelContentHeight: CGFloat = 0
     // 源面板覆盖层：与 App 面板同构，各自一套遮罩+宿主，互开时先关对方
     private var czfSourcesOverlayBackdrop: UIView?
     private var czfSourcesOverlayHost: UIHostingController<AnyView>?
@@ -184,6 +187,7 @@ extension Notification.Name {
     // 2026-11-06 样式同步后源面板在主窗同为悬浮卡片）
     private var czfSourcesPanelGrabber: UIView?
     private var czfSourcesPanelBottomInset: CGFloat = 0
+    private var czfSourcesPanelContentHeight: CGFloat = 0
 
     @objc public var windowHostingView = VirtualWindowsHostView()
     internal var hostingController: UIHostingController<AnyView>?
@@ -2193,16 +2197,44 @@ extension Notification.Name {
     // 55%，顶部带抓手条；游客窗里保持旧的贴底抽屉：满宽、
     // 只圆上两角、高 60%）。所有入口（边缘手势/快捷栏按钮）
     // 都走这一套呈现，没有第二种样式。
-    private func czfAppPanelFrames(in window: UIWindow) -> (open: CGRect, offscreen: CGRect, card: Bool) {
+    // 量宿主内容的贴合高度：给足高度提案，问 SwiftUI 内
+    // 容自己要多高。旧系统/量测异常返回 0，外层退回原定
+    // 高，不会把面板压坏。
+    private func czfMeasuredPanelHeight(host: UIHostingController<AnyView>, in window: UIWindow) -> CGFloat {
+        if #available(iOS 16.0, *) {
+            let card = !czfPanelIsGuestWindow(window)
+            let width = window.bounds.width - (card ? 20 : 0)
+            let h = host.sizeThatFits(in: CGSize(width: width, height: .greatestFiniteMagnitude)).height
+            return h.isFinite && h > 0 ? h : 0
+        }
+        return 0
+    }
+
+    // 面板高度贴合内容（Campbell 点名：内容少时面板下边
+    // 留一截空白很丑）：高度取内容贴合高与原定高（卡片
+    // 55% / 抽屉 60%）的较小者，内容多时封顶、列表照旧
+    // 滚动；下限 250 防量测偏小把面板压扁。
+    private func czfPanelFrames(in window: UIWindow, contentHeight: CGFloat) -> (open: CGRect, offscreen: CGRect, card: Bool) {
         let b = window.bounds
         let card = !czfPanelIsGuestWindow(window)
-        let h = b.height * (card ? 0.55 : 0.6)
+        let cap = b.height * (card ? 0.55 : 0.6)
+        var h = cap
+        if contentHeight > 0 {
+            h = min(cap, max(ceil(contentHeight) + 2, 250))
+        }
         let side: CGFloat = card ? 10 : 0
         let bottom: CGFloat = card ? 10 : 0
         let width = b.width - side * 2
         return (CGRect(x: side, y: b.height - bottom - h, width: width, height: h),
                 CGRect(x: side, y: b.height, width: width, height: h),
                 card)
+    }
+
+    private func czfAppPanelFrames(in window: UIWindow) -> (open: CGRect, offscreen: CGRect, card: Bool) {
+        if let host = czfPanelOverlayHost {
+            czfAppPanelContentHeight = czfMeasuredPanelHeight(host: host, in: window)
+        }
+        return czfPanelFrames(in: window, contentHeight: czfAppPanelContentHeight)
     }
 
     // 面板玻璃质感边框（Campbell 定，App/源两面板同款）：
@@ -2232,11 +2264,13 @@ extension Notification.Name {
 
     // 源面板的静止位/离屏位：与 App 面板共用同一套帧规则
     // （Campbell 2026-11-06 令：两个面板样式同步、以快捷
-    // 栏打开的 App 面板为准）。czfAppPanelFrames 只按目标
-    // 窗口算（主窗卡片/游客窗抽屉）、与面板种类无关，
-    // 直接转调，两边永远一致。
+    // 栏打开的 App 面板为准）；各自量自己的内容贴合高，
+    // 规则（形态/封顶/下限）走同一处 czfPanelFrames。
     private func czfSourcesPanelFrames(in window: UIWindow) -> (open: CGRect, offscreen: CGRect, card: Bool) {
-        return czfAppPanelFrames(in: window)
+        if let host = czfSourcesOverlayHost {
+            czfSourcesPanelContentHeight = czfMeasuredPanelHeight(host: host, in: window)
+        }
+        return czfPanelFrames(in: window, contentHeight: czfSourcesPanelContentHeight)
     }
 
     // 按卡片/抽屉形态对齐源面板宿主的圆角与抓手条显隐
@@ -3222,16 +3256,24 @@ private struct CZFListBackdropHidden: ViewModifier {
 }
 
 // 面板玻璃面（Campbell 定：整个面板是玻璃样式，不是只
-// 描一圈边）：面板根视图背景垫一层超薄材质——面板背后
-// 的界面被磨砂透出，卡片/固定条/列表浮在玻璃面上。走
-// SwiftUI 背景层，渲染顺序由框架保证在内容之下，不碰
-// 宿主视图层级（3.8.23 往宿主里塞模糊层盖住内容、两面
-// 板白屏的教训）。圆角由宿主的 clipsToBounds 裁，不用
-// 自己画形状。
+// 描一圈边）：面板根视图的背景层。iOS 26 用真液态玻璃
+// （glassEffect，与快捷栏/顶部胶囊同款：背后的界面带
+// 折射透出来）；旧系统退超薄材质。第一版用超薄材质，
+// 在浅色底上糊成一整块白板、看不出玻璃感（Campbell
+// 18:13 实测点名），故改液态玻璃。走 SwiftUI 背景层，
+// 渲染顺序由框架保证在内容之下，不碰宿主视图层级
+// （3.8.23 往宿主里塞模糊层盖住内容、两面板白屏的教
+// 训）。圆角由宿主的 clipsToBounds 裁，不用自己画形状。
 private struct CZFPanelGlassBackground: View {
     var body: some View {
-        Rectangle()
-            .fill(.ultraThinMaterial)
+        if #available(iOS 26.0, *), SharedModel.isLiquidGlassEnabled {
+            Rectangle()
+                .fill(.clear)
+                .glassEffect(.regular, in: .rect(cornerRadius: 0))
+        } else {
+            Rectangle()
+                .fill(.ultraThinMaterial)
+        }
     }
 }
 
