@@ -351,15 +351,16 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     if sharedModel.multiLCStatus != 2 {
-                        // 有传输在进行时（Campbell 定）：点加号跳过
-                        // 菜单、直接打开传输进度。原来这里在安装
-                        // 期间把加号换成一个转圈，加号等于点不了，
-                        // 一并改掉。
+                        // 有传输在进行时（Campbell 定）：这个位置
+                        // 显示为转圈，点它跳过菜单、直接打开传输
+                        // 进度。原来这里在安装期间也是转圈，但它
+                        // 不是按钮、点不了；现在转圈包在 Button
+                        // 里，能点。
                         if downloadHelper.isDownloading || installprogressVisible || installQueueRunning || !pendingInstalls.isEmpty {
                             Button {
                                 transferProgressShow = true
                             } label: {
-                                Label("add", systemImage: "plus")
+                                ProgressView().progressViewStyle(.circular).padding(.horizontal, 8)
                             }
                         } else {
                             Menu {
