@@ -2205,6 +2205,25 @@ extension Notification.Name {
                 card)
     }
 
+    // 面板玻璃质感边框（Campbell 定，App/源两面板同款）：
+    // 宿主层垫一层超薄材质模糊（卡片间隙、列表留白透出来
+    // 的是磨砂玻璃，不是死色或透空）+ 一圈半透明白色亮边
+    // （跟着宿主圆角走：卡片式四角、抽屉式只上两角由
+    // maskedCorners 决定）。两个 ApplyStyle 呈现时各调一
+    // 次，模糊层按 tag 认领，重复调用不叠加。
+    private func czfApplyGlassFrame(to hostView: UIView) {
+        hostView.layer.borderWidth = 1.5
+        hostView.layer.borderColor = UIColor.white.withAlphaComponent(0.45).cgColor
+        if hostView.viewWithTag(0xC2F01) == nil {
+            let blur = UIVisualEffectView(effect: UIBlurEffect(style: .systemUltraThinMaterial))
+            blur.tag = 0xC2F01
+            blur.frame = hostView.bounds
+            blur.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+            blur.isUserInteractionEnabled = false
+            hostView.insertSubview(blur, at: 0)
+        }
+    }
+
     // 按卡片/抽屉形态对齐 App 面板宿主的圆角与抓手条显隐，
     // 并记下底部留白供下滑关闭与互切动画算静止位。
     private func czfApplyAppPanelStyle(in window: UIWindow) {
@@ -2216,6 +2235,7 @@ extension Notification.Name {
             : [.layerMinXMinYCorner, .layerMaxXMinYCorner]
         czfPanelGrabber?.isHidden = !frames.card
         czfAppPanelBottomInset = frames.card ? 10 : 0
+        czfApplyGlassFrame(to: host.view)
     }
 
     // 源面板的静止位/离屏位：与 App 面板共用同一套帧规则
@@ -2238,6 +2258,7 @@ extension Notification.Name {
             : [.layerMinXMinYCorner, .layerMaxXMinYCorner]
         czfSourcesPanelGrabber?.isHidden = !frames.card
         czfSourcesPanelBottomInset = frames.card ? 10 : 0
+        czfApplyGlassFrame(to: host.view)
     }
 
     private func presentAllAppsPanel() {
