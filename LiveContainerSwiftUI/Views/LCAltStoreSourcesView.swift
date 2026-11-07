@@ -723,6 +723,12 @@ struct LCSourcesView: View {
                     .animation(nil, value: isBatchMode)
                 }
             }
+            // 搜索挂在导航视图里面的内容上（Campbell 定）：
+            // 原来挂在 NavigationView 外面，探针顺响应链找
+            // 不到搜索控制器，点搜索时顶栏被系统藏掉；移进
+            // 来后与应用页同款同控。
+            .searchable(text: $searchContext.query, placement: .navigationBarDrawer(displayMode: .always))
+            .czfKeepNavBarDuringSearch()
         }
         .navigationViewStyle(StackNavigationViewStyle())
         .alert("lc.common.error".loc, isPresented: Binding<Bool>(
@@ -773,8 +779,6 @@ struct LCSourcesView: View {
                 )
             }
         }
-        .searchable(text: $searchContext.query, placement: .navigationBarDrawer(displayMode: .always))
-        .czfKeepNavBarDuringSearch()
 
         .onAppear {
             refreshUpdatableCache()

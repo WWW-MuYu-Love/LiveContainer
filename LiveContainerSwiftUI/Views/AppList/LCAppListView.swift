@@ -50,12 +50,19 @@ private enum CZFPendingInstall {
 }
 
 
-// 点搜索栏时不把导航栏藏起来（Campbell 定）：searchable
-// 激活时系统默认隐藏导航栏（标题、工具栏按钮一起消失），
-// 对应开关 hidesNavigationBarDuringPresentation 在
-// SwiftUI 里没暴露，用探针视图顺响应链找到本页的搜索
-// 控制器关掉它。各带搜索的页面在根视图上加
-// .czfKeepNavBarDuringSearch() 即可。
+// 点搜索栏时不把导航栏藏起来（Campbell 定，3.8.21 实测
+// 后修正）：searchable 激活时系统默认隐藏导航栏（标题、
+// 工具栏按钮一起消失），对应开关 hidesNavigationBar-
+// DuringPresentation 在 SwiftUI 里没暴露。第一版探针
+// 两处毛病：① 只在页面出现时设一次，源/应用两页的
+// searchable 又挂在 NavigationView 外面，探针顺响应链
+// 根本找不到搜索控制器，顶栏照样被藏；② 顺手把搜索条
+// 改成 minimal 样式，找得到的页面（模块）搜索框被弄成
+// 灰底，和静止时不一样。现在的办法：searchable 与探针
+// 一律挂在 NavigationView 里面的内容上（响应链走得
+// 到）；探针在窗口期间每 0.25 秒巡查一次，并用 KVO 盯
+// 住开关，系统随时改回 true 都立刻压回 false；搜索条
+// 样式不再动，保持系统默认，和静止/滑动时同款。
 struct CZFSearchNavBarProbe: UIViewRepresentable {
     func makeUIView(context: Context) -> UIView {
         ProbeView()
@@ -66,48 +73,83 @@ struct CZFSearchNavBarProbe: UIViewRepresentable {
     }
 
     final class ProbeView: UIView {
-        override func didMoveToWindow() {
-            super.didMoveToWindow()
-            czfApply()
+        private var timer: Timer?
+        private var observations: [ObjectIdentifier: NSKeyValueObservation] = [:]
+        private var observedBoxes: [ObjectIdentifier: WeakSC] = [:]
+
+        private final class WeakSC {
+            weak var value: UISearchController?
         }
 
-        // 搜索控制器统一处理：不隐藏导航栏 + 搜索框背景
-        // 设为 minimal（去掉搜索条自己的底色填充，透出导
-        // 航栏材质，和页面滑动时顶栏的样式一致）。
-        func czfFixSearchController(_ sc: UISearchController) {
-            sc.hidesNavigationBarDuringPresentation = false
-            if sc.searchBar.searchBarStyle != .minimal {
-                sc.searchBar.searchBarStyle = .minimal
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            if window != nil {
+                czfApply()
+                if timer == nil {
+                    let t = Timer(timeInterval: 0.25, repeats: true) { [weak self] _ in
+                        self?.czfEnforceAll()
+                    }
+                    RunLoop.main.add(t, forMode: .common)
+                    timer = t
+                }
+            } else {
+                timer?.invalidate()
+                timer = nil
             }
+        }
+
+        deinit {
+            timer?.invalidate()
         }
 
         func czfApply() {
             DispatchQueue.main.async { [weak self] in
-                guard let self else { return }
-                var responder: UIResponder? = self
-                while let r = responder {
-                    if let vc = r as? UIViewController {
-                        if let sc = vc.navigationItem.searchController {
-                            czfFixSearchController(sc)
-                        }
-                        if let nav = vc.navigationController {
-                            // 导航栏外观统一（Campbell 定）：点搜索
-                            // 框时的样子要和页面滑动时一样——把贴顶
-                            // 的透明外观换成滑动时的标准外观，静止/
-                            // 滑动/搜索三种状态就都是同一个样式。
-                            let bar = nav.navigationBar
-                            if bar.scrollEdgeAppearance != bar.standardAppearance {
-                                bar.scrollEdgeAppearance = bar.standardAppearance
-                            }
-                            for child in nav.viewControllers {
-                                if let sc = child.navigationItem.searchController {
-                                    czfFixSearchController(sc)
-                                }
+                self?.czfEnforceAll()
+            }
+        }
+
+        // 找到一个搜索控制器就把开关压回 false，并挂 KVO
+        // 长期盯住：SwiftUI 在搜索激活前后可能把开关重置
+        // 成 true，KVO 一发现立刻压回。
+        func czfFixSearchController(_ sc: UISearchController) {
+            if sc.hidesNavigationBarDuringPresentation {
+                sc.hidesNavigationBarDuringPresentation = false
+            }
+            let key = ObjectIdentifier(sc)
+            if observedBoxes[key]?.value == nil {
+                let box = WeakSC()
+                box.value = sc
+                observedBoxes[key] = box
+                observations[key] = sc.observe(\.hidesNavigationBarDuringPresentation, options: [.new]) { controller, change in
+                    if change.newValue == true {
+                        controller.hidesNavigationBarDuringPresentation = false
+                    }
+                }
+            }
+        }
+
+        func czfEnforceAll() {
+            var responder: UIResponder? = self
+            while let r = responder {
+                if let vc = r as? UIViewController {
+                    if let sc = vc.navigationItem.searchController {
+                        czfFixSearchController(sc)
+                    }
+                    if let nav = vc.navigationController {
+                        for child in nav.viewControllers {
+                            if let sc = child.navigationItem.searchController {
+                                czfFixSearchController(sc)
                             }
                         }
                     }
-                    responder = r.next
                 }
+                responder = r.next
+            }
+            // 清掉已释放控制器的观察记录
+            let deadKeys = observedBoxes.filter { $0.value.value == nil }.map { $0.key }
+            for key in deadKeys {
+                observations[key] = nil
+                observedBoxes[key] = nil
             }
         }
     }
@@ -520,6 +562,14 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
                     }
                 }
             }
+            // 搜索栏与源页同款同控（Campbell 定）：导航栏下方
+            // 常显，不用 .automatic 的自动收起；挂在导航视图
+            // 里面的内容上，探针才找得到搜索控制器、点搜索
+            // 时顶栏才压得住不藏。搜索词仍写本页
+            // searchContext，「打开网址 / 在网上搜索」两行与
+            // 名称过滤都不受影响。
+            .searchable(text: $searchContext.query, placement: .navigationBarDrawer(displayMode: .always))
+            .czfKeepNavBarDuringSearch()
         }
         .navigationViewStyle(StackNavigationViewStyle())
         .alert("lc.common.error".loc, isPresented: $errorShow){
@@ -796,11 +846,6 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
                 Task { await launchAppWithBundleId(bundleId: bundleId, container: nil) }
             }
         }
-        // 搜索栏与源页同款同控（Campbell 定）：导航栏下方常显，
-        // 不用 .automatic 的自动收起。搜索词仍写本页 searchContext，
-        // 「打开网址 / 在网上搜索」两行与名称过滤都不受影响。
-        .searchable(text: $searchContext.query, placement: .navigationBarDrawer(displayMode: .always))
-        .czfKeepNavBarDuringSearch()
 
     }
     
