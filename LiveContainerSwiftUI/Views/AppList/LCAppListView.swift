@@ -71,9 +71,9 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
     @State var installQueueCurrent = ""
     // 点顶部小条打开的队列名单（可删单个、可取消剩余）
     @State var queueSheetShow = false
-    // 传输进度面板（加号菜单最下面一项打开，仿 SideKite
-    // 文件页那张）：看进行中的下载/安装/队列，没进行中的
-    // 显示空态。
+    // 下载管理面板（加号菜单最下面一项打开，仿 SideKite
+    // 文件页那张）：看进行中的下载/安装/队列 + 已下载的
+    // IPA 列表，都没有时显示空态。
     @State var transferProgressShow = false
     
     // ipa installing stuff

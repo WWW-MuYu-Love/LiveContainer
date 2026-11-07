@@ -12,8 +12,8 @@ public final class DownloadHelper : ObservableObject {
     @Published var downloadedSize : Int64 = 0
     @Published var totalSize : Int64 = 0
     @Published var isDownloading = false
-    // 当前下载的文件名（取自下载地址的最后一段）：传输进度
-    // 面板显示用，下载弹窗/胶囊不显示名字、保持原样。
+    // 当前下载的文件名（取自下载地址的最后一段）：下载
+    // 管理面板显示用。
     @Published var currentDownloadName: String = ""
     @Published var cancelled = false
     // 进度发布节流用：上次发布进度的时间
