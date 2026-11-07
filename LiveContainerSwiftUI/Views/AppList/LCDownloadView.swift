@@ -230,3 +230,60 @@ class DownloadDelegate: NSObject, URLSessionDownloadDelegate {
     }
 }
 
+
+// 「下载管理」里的一条已下载文件
+struct CZFDownloadedFile: Identifiable {
+    let url: URL
+    let name: String
+    let size: Int64
+    let date: Date
+    var id: String { url.path }
+}
+
+// 下载管理的文件仓库（Campbell 定）：浏览器下载、链接
+// 下载的 IPA 不再直接安装，先存进 Documents/Downloads
+// 保留着，用户在「下载管理」里点安装才装、点删除才删。
+enum CZFDownloadStore {
+    static func directory() -> URL {
+        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+        let dir = docs.appendingPathComponent("Downloads", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }
+
+    // 同名文件已在时不覆盖：新文件依次叫「名字 2」「名字 3」
+    static func uniqueDestination(filename: String) -> URL {
+        let dir = directory()
+        let name = filename.isEmpty ? "app.ipa" : filename
+        var candidate = dir.appendingPathComponent(name)
+        if !FileManager.default.fileExists(atPath: candidate.path) {
+            return candidate
+        }
+        let ext = candidate.pathExtension
+        let base = candidate.deletingPathExtension().lastPathComponent
+        var i = 2
+        while true {
+            let n = ext.isEmpty ? "\(base) \(i)" : "\(base) \(i).\(ext)"
+            candidate = dir.appendingPathComponent(n)
+            if !FileManager.default.fileExists(atPath: candidate.path) {
+                return candidate
+            }
+            i += 1
+        }
+    }
+
+    static func listFiles() -> [CZFDownloadedFile] {
+        let dir = directory()
+        let keys: [URLResourceKey] = [.fileSizeKey, .contentModificationDateKey]
+        guard let urls = try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: keys) else {
+            return []
+        }
+        return urls
+            .filter { ["ipa", "tipa"].contains($0.pathExtension.lowercased()) }
+            .map { u in
+                let values = try? u.resourceValues(forKeys: Set(keys))
+                return CZFDownloadedFile(url: u, name: u.lastPathComponent, size: Int64(values?.fileSize ?? 0), date: values?.contentModificationDate ?? .distantPast)
+            }
+            .sorted { $0.date > $1.date }
+    }
+}

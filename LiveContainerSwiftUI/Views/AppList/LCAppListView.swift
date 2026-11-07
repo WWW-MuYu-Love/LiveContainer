@@ -78,6 +78,11 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
     
     // ipa installing stuff
     @State var installprogressVisible = false
+    // 下载管理的排队与状态：下载器全局只有一个，忙时新
+    // 下载先排队；downloadedFiles 是已下载列表的快照
+    @State var pendingDownloadUrls: [URL] = []
+    @State var isDownloadingToManager = false
+    @State var downloadedFiles: [CZFDownloadedFile] = []
     // 安装排队：进行中再点安装不再静默丢掉，排进队、当前装完
     // 接着装（defer 里出队一个）；同地址重复点只排一次
     @State private var pendingInstalls: [CZFPendingInstall] = []
@@ -372,7 +377,7 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
                                     Task{ await startInstallFromUrl() }
                                 })
                                 Divider()
-                                Button("传输进度", systemImage: "arrow.down.circle", action: {
+                                Button("下载管理", systemImage: "arrow.down.circle", action: {
                                     transferProgressShow = true
                                 })
                             } label: {
@@ -700,6 +705,13 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
         }
         .onReceive(NotificationCenter.default.publisher(for: NSNotification.InstallAppNotification)) { obj in
             if let obj2 = obj.object as? [String: Any], let installUrl = obj2["url"] as? URL {
+                // 浏览器下载（带 toDownloadManager 标记）：不直
+                // 接安装，先下载存进「下载管理」（Campbell 定）；
+                // 其余来源（源页/数据管理/快捷栏）照旧走安装队列
+                if (obj2["toDownloadManager"] as? Bool) == true {
+                    Task { await downloadToManager(url: installUrl) }
+                    return
+                }
                 // 全部走队列串行执行：以前忙着装别的时新请求会被
                 // 直接丢掉，批量安装实际只装得上第一个
                 enqueueInstall(url: installUrl, autoReplace: (obj2["autoReplace"] as? Bool) ?? false, preview: (obj2["preview"] as? Bool) ?? false, forceAsNew: (obj2["forceAsNew"] as? Bool) ?? false)
@@ -759,15 +771,15 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
         }
     }
     
-    // 传输进度面板内容（加号菜单「传输进度」打开）：进行
-    // 中的下载（全局 DownloadHelper，一次一个）、安装、
-    // 队列各一行带进度；都没有时是空态——对勾圆圈 +
-    // 「没有进行中的传输 / 传输进度会显示在这里。」，
-    // 与 SideKite 图里那张一样。
+    // 「下载管理」面板内容（加号菜单/传输中转圈打开）：
+    // 上半是进行中的下载（全局 DownloadHelper，一次一
+    // 个）、安装、队列各一行带进度；下半「已下载」是存
+    // 在 Downloads 目录里的 IPA（浏览器/链接下载先存这
+    // 里，点安装才装、点垃圾桶才删）。都没有时是空态。
     private var transferProgressSheet: some View {
         NavigationView {
             Group {
-                if downloadHelper.isDownloading || installprogressVisible || installQueueRunning || !pendingInstalls.isEmpty {
+                if downloadHelper.isDownloading || installprogressVisible || installQueueRunning || !pendingInstalls.isEmpty || !downloadedFiles.isEmpty {
                     List {
                         if downloadHelper.isDownloading {
                             Section("下载") {
@@ -822,21 +834,49 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
                                 }
                             }
                         }
+                        if !downloadedFiles.isEmpty {
+                            Section("已下载") {
+                                ForEach(downloadedFiles) { file in
+                                    HStack(spacing: 10) {
+                                        VStack(alignment: .leading, spacing: 2) {
+                                            Text(file.name)
+                                                .lineLimit(1)
+                                            Text("\(czfTransferFormatBytes(file.size)) · \(file.date.formatted(date: .abbreviated, time: .shortened))")
+                                                .font(.caption)
+                                                .foregroundStyle(.secondary)
+                                        }
+                                        Spacer()
+                                        Button("安装") {
+                                            transferProgressShow = false
+                                            Task { await installFromUrl(urlStr: file.url.absoluteString) }
+                                        }
+                                        .font(.subheadline)
+                                        Button(role: .destructive) {
+                                            try? FileManager.default.removeItem(at: file.url)
+                                            refreshDownloadedFiles()
+                                        } label: {
+                                            Image(systemName: "trash")
+                                        }
+                                    }
+                                    .padding(.vertical, 2)
+                                }
+                            }
+                        }
                     }
                 } else {
                     VStack(spacing: 12) {
                         Image(systemName: "checkmark.circle")
                             .font(.system(size: 56))
                             .foregroundStyle(.secondary)
-                        Text("没有进行中的传输")
+                        Text("暂无下载")
                             .font(.title3.bold())
-                        Text("传输进度会显示在这里。")
+                        Text("通过浏览器或链接下载的 IPA 会保存在这里。")
                             .foregroundStyle(.secondary)
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             }
-            .navigationTitle("传输进度")
+            .navigationTitle("下载管理")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
@@ -847,6 +887,7 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
                     }
                 }
             }
+            .onAppear { refreshDownloadedFiles() }
         }
         .navigationViewStyle(StackNavigationViewStyle())
     }
@@ -961,11 +1002,13 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
             // 否则队里那个撞上正忙会重新排队、一直等不到
             self.installprogressVisible = false
             drainPendingInstalls()
+            drainPendingDownloads()
         } catch {
             errorInfo = error.localizedDescription
             errorShow = true
             self.installprogressVisible = false
             drainPendingInstalls()
+            drainPendingDownloads()
         }
     }
     
@@ -1312,6 +1355,48 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
         }
     }
 
+    // 把 IPA 下载进「下载管理」先存着（Campbell 定）：
+    // 浏览器下载与链接下载都走这里，不再直接安装。
+    // 下载器全局只有一个，忙（正在下别的/正在安装）时
+    // 先排队，忙完自动接着下，不静默丢请求。
+    func downloadToManager(url: URL) async {
+        if isDownloadingToManager || downloadHelper.isDownloading || installprogressVisible {
+            if !pendingDownloadUrls.contains(url) {
+                pendingDownloadUrls.append(url)
+            }
+            return
+        }
+        isDownloadingToManager = true
+        defer {
+            isDownloadingToManager = false
+            drainPendingDownloads()
+        }
+        let dest = CZFDownloadStore.uniqueDestination(filename: url.lastPathComponent)
+        do {
+            try await downloadHelper.download(url: url, to: dest)
+            if downloadHelper.cancelled {
+                try? FileManager.default.removeItem(at: dest)
+                return
+            }
+            refreshDownloadedFiles()
+            installInfo = "已保存到下载管理：\(dest.lastPathComponent)"
+            installInfoShow = true
+        } catch {
+            errorInfo = LCUtils.czfFriendlyError(error)
+            errorShow = true
+        }
+    }
+
+    func drainPendingDownloads() {
+        guard !pendingDownloadUrls.isEmpty else { return }
+        let next = pendingDownloadUrls.removeFirst()
+        Task { await downloadToManager(url: next) }
+    }
+
+    func refreshDownloadedFiles() {
+        downloadedFiles = CZFDownloadStore.listFiles()
+    }
+
     func startInstallFromUrl() async {
         guard let installUrlStr = await installUrlInput.open(), installUrlStr.count > 0 else {
             return
@@ -1320,7 +1405,14 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
             await installFromPlist(urlStr: installUrlStr)
             return
         }
-        await installFromUrl(urlStr: installUrlStr)
+        // 链接下载改去向（Campbell 定）：不再直接安装，
+        // 先下载存进「下载管理」，在那儿点安装才装
+        guard let downloadUrl = URL(string: installUrlStr) else {
+            errorInfo = "lc.appList.urlInvalidError".loc
+            errorShow = true
+            return
+        }
+        await downloadToManager(url: downloadUrl)
     }
     
     func installFromPlist(urlStr: String) async {
@@ -1605,6 +1697,7 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
         defer {
             self.installprogressVisible = false
             drainPendingInstalls()
+            drainPendingDownloads()
         }
 
         if installUrl.isFileURL {

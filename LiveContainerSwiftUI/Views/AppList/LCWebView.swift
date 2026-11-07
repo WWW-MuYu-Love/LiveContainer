@@ -166,15 +166,15 @@ struct LCWebView: View {
         }
     }
     
-    // IPA 直链被浏览器拦下后走这里：先关浏览器，再发安装
-    // 通知给 App 页的安装队列下载安装（源页安装同款时序，
-    // 等退场动画走完再发，免得下载/安装界面被退场吞掉）。
-    // 用户粘贴直链点「打开网址」时浏览器就是为这个链接开
-    // 的，关掉正好落回应用页看下载进度。
+    // IPA 直链被浏览器拦下后走这里：先关浏览器，再发通知
+    // 让 App 页把 IPA 下载进「下载管理」先存着（Campbell
+    // 定：浏览器下载不再直接安装）。等退场动画走完再发，
+    // 免得下载界面被退场吞掉。用户粘贴直链点「打开网址」
+    // 时浏览器就是为这个链接开的，关掉正好落回应用页。
     public func onIPADownloadDetected(url: URL) {
         isPresent = false
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-            NotificationCenter.default.post(name: NSNotification.InstallAppNotification, object: ["url": url])
+            NotificationCenter.default.post(name: NSNotification.InstallAppNotification, object: ["url": url, "toDownloadManager": true])
         }
     }
 
