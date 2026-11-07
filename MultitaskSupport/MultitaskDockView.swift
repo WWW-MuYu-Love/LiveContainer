@@ -2206,22 +2206,14 @@ extension Notification.Name {
     }
 
     // 面板玻璃质感边框（Campbell 定，App/源两面板同款）：
-    // 宿主层垫一层超薄材质模糊（卡片间隙、列表留白透出来
-    // 的是磨砂玻璃，不是死色或透空）+ 一圈半透明白色亮边
-    // （跟着宿主圆角走：卡片式四角、抽屉式只上两角由
-    // maskedCorners 决定）。两个 ApplyStyle 呈现时各调一
-    // 次，模糊层按 tag 认领，重复调用不叠加。
+    // 宿主层一圈半透明白色亮边（跟着宿主圆角走：卡片式
+    // 四角、抽屉式只上两角由 maskedCorners 决定），就是
+    // 玻璃的那道高光边。只描边、不进宿主内部——往宿主里
+    // 塞模糊层会盖住 SwiftUI 内容（3.8.23 两面板白屏实
+    // 测），不再那么干。两个 ApplyStyle 呈现时各调一次。
     private func czfApplyGlassFrame(to hostView: UIView) {
         hostView.layer.borderWidth = 1.5
         hostView.layer.borderColor = UIColor.white.withAlphaComponent(0.45).cgColor
-        if hostView.viewWithTag(0xC2F01) == nil {
-            let blur = UIVisualEffectView(effect: UIBlurEffect(style: .systemUltraThinMaterial))
-            blur.tag = 0xC2F01
-            blur.frame = hostView.bounds
-            blur.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-            blur.isUserInteractionEnabled = false
-            hostView.insertSubview(blur, at: 0)
-        }
     }
 
     // 按卡片/抽屉形态对齐 App 面板宿主的圆角与抓手条显隐，
