@@ -163,15 +163,6 @@ struct CZFSearchNavBarProbe: UIViewRepresentable {
                         czfFixSearchController(sc)
                     }
                     if let nav = vc.navigationController {
-                        // 滑动/搜索时顶栏也用贴顶的透明外观：不
-                        // 冒实底横带，卡片透过胶囊和搜索框，和
-                        // 静止时一个样。
-                        let bar = nav.navigationBar
-                        if let edge = bar.scrollEdgeAppearance {
-                            if bar.standardAppearance !== edge { bar.standardAppearance = edge }
-                            if bar.compactAppearance !== edge { bar.compactAppearance = edge }
-                            if bar.compactScrollEdgeAppearance !== edge { bar.compactScrollEdgeAppearance = edge }
-                        }
                         for child in nav.viewControllers {
                             if let sc = child.navigationItem.searchController {
                                 czfFixSearchController(sc)
@@ -512,7 +503,6 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
             }
             
             .navigationTitle("lc.appList.myApps".loc)
-            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     if sharedModel.multiLCStatus != 2 {

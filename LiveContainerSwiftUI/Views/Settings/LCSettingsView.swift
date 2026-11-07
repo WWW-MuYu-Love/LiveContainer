@@ -145,7 +145,6 @@ struct LCSettingsView: View {
             // 灰（Form 默认），不另改。
             .czfListSectionSpacing(10)
             .navigationBarTitle("lc.tabView.settings".loc)
-            .navigationBarTitleDisplayMode(.inline)
             .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .always), prompt: "搜索设置")
             .czfKeepNavBarDuringSearch()
             .alert("lc.common.error".loc, isPresented: $errorShow){
