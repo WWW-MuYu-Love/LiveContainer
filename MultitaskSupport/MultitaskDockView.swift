@@ -3221,6 +3221,20 @@ private struct CZFListBackdropHidden: ViewModifier {
     }
 }
 
+// 面板玻璃面（Campbell 定：整个面板是玻璃样式，不是只
+// 描一圈边）：面板根视图背景垫一层超薄材质——面板背后
+// 的界面被磨砂透出，卡片/固定条/列表浮在玻璃面上。走
+// SwiftUI 背景层，渲染顺序由框架保证在内容之下，不碰
+// 宿主视图层级（3.8.23 往宿主里塞模糊层盖住内容、两面
+// 板白屏的教训）。圆角由宿主的 clipsToBounds 裁，不用
+// 自己画形状。
+private struct CZFPanelGlassBackground: View {
+    var body: some View {
+        Rectangle()
+            .fill(.ultraThinMaterial)
+    }
+}
+
 // 分组列表段间距压到 0（iOS 17+）：insetGrouped 的 Section
 // 即使没有段头，系统也留一截段头间距，面板里第一张卡上方
 // 就空出一条大空白（Campbell 2026-11-06 真机点名）。struct
@@ -3396,6 +3410,7 @@ struct AllAppsListView: View {
             }
             }
         }
+        .background(CZFPanelGlassBackground())
         // 启动失败提示（源面板同款写法）：面板已关、启动在后台
         // Task 里抛错时，把原因弹出来，不再“点了没反应”。
         .alert("提示", isPresented: Binding(get: { launchError != nil }, set: { if !$0 { launchError = nil } })) {
@@ -3856,6 +3871,7 @@ struct SourcesPanelView: View {
             // 句后面构建 #16 报过找不到（if/else 的结果不是
             // 可修饰的具体视图）。标题行已手写（见 VStack
             // 第一行），这里不再有 navigationTitle/toolbar。
+            .background(CZFPanelGlassBackground())
             .onChange(of: dockManager.czfSourcesPanelOpenCounter) { _ in
                 // 每次调出回到初始状态：滚回最顶部（用户定，
                 // 不留上次滑动的位置）+ 刷新源数据 + 清空搜索
