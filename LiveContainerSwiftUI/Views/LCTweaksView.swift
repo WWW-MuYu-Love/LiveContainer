@@ -627,12 +627,14 @@ struct LCTweaksView: View {
             // 灰底——下方 List 本就是这个灰，这里补上分段选择
             // 器那一条，免得顶部一条白、下面灰。
             .background(Color(.systemGroupedBackground))
+            // 搜索栏与应用页等同款（Campbell 定）：挂在导航
+            // 视图里面的内容上（原来挂在 NavigationView 外
+            // 面，渲染和行为都和应用/源页不一样），导航栏下
+            // 方常显；提示词仍是「搜索模块」。
+            .searchable(text: $searchContext.query, placement: .navigationBarDrawer(displayMode: .always), prompt: "搜索模块")
+            .czfKeepNavBarDuringSearch()
         }
         .navigationViewStyle(StackNavigationViewStyle())
-        // 搜索栏与源页同款（Campbell 定）：导航栏下方常显，
-        // 不用 .automatic 的自动收起；提示词仍是「搜索模块」。
-        .searchable(text: $searchContext.query, placement: .navigationBarDrawer(displayMode: .always), prompt: "搜索模块")
-        .czfKeepNavBarDuringSearch()
 
     }
 }
